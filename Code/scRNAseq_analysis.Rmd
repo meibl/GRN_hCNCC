@@ -1,0 +1,434 @@
+---
+title: "example_integration"
+output: html_document
+date: "2025-07-20"
+---
+
+```{r}
+library("Seurat")
+library("SeuratDisk")
+library("SingleCellExperiment")
+library("ggplot2")
+library("ggpubr")
+library("readxl")
+library("tidyverse")
+library("stringr")
+library("Matrix")
+```
+
+
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+```
+
+
+```{r}
+#Load filtered counts and cell IDs (already QC performed on the cell-level by the Parse preprocessing)
+counts <- readMM(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/DGE_filtered/count_matrix.mtx") %>% as.matrix() %>% t()
+
+cells <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/DGE_filtered/cell_metadata.csv", header = T)
+
+genes <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/DGE_filtered/all_genes.csv", header = T)
+
+colnames(counts) <- cells$bc_wells
+rownames(counts) <- genes$gene_name
+
+rownames(cells) <- cells$bc_wells
+seurat_obj <- CreateSeuratObject(counts = counts,
+                   assay = "RNA",
+                   meta.data = cells)
+
+seurat_obj@meta.data$timepoint <- NA
+seurat_obj@meta.data$timepoint[which(seurat_obj$bc1_well %in% c("A1", "A2", "A3"))] <- "d5"
+seurat_obj@meta.data$timepoint[which(seurat_obj$bc1_well %in% c("A4", "A5", "A6"))] <- "d8"
+seurat_obj@meta.data$timepoint[which(seurat_obj$bc1_well %in% c("A7", "A8", "A9"))] <- "d11"
+seurat_obj@meta.data$timepoint[which(seurat_obj$bc1_well %in% c("A10", "A11", "A12"))] <- "p2"
+
+seurat_obj$timepoint <- factor(seurat_obj$timepoint, levels = c("d5", "d8", "d11", "p2"))
+
+#Normalization
+seurat_obj <- NormalizeData(seurat_obj)
+
+#Find highly variable features
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat_obj), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot2
+plot1 + plot2
+
+all.genes <- rownames(seurat_obj)
+seurat_obj <- ScaleData(seurat_obj, features = all.genes)
+
+#Dimensionality reduction
+seurat_obj <- RunPCA(seurat_obj, features = VariableFeatures(object = seurat_obj))
+
+VizDimLoadings(seurat_obj, dims = 1:2, reduction = "pca")
+
+DimPlot(seurat_obj, reduction = "pca", group.by = "timepoint")
+
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:10)
+seurat_obj@meta.data
+DimPlot(seurat_obj, reduction = "umap",group.by = "bc1_well")
+DimPlot(seurat_obj, reduction = "umap",group.by = "timepoint")
+DimPlot(seurat_obj, reduction = "umap",split.by = "timepoint")
+
+
+mat <- Seurat::GetAssayData(seurat_obj, assay = "RNA", slot = "scale.data")
+pca <- seurat_obj[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+
+varExplained
+```
+
+```{r}
+#Load filtered counts and cell IDs (already QC performed on the cell-level by the Parse preprocessing)
+counts <- readMM(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227W/all-sample/DGE_filtered/count_matrix.mtx") %>% as.matrix() %>% t()
+
+cells <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227W/all-sample/DGE_filtered/cell_metadata.csv", header = T)
+
+genes <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227W/all-sample/DGE_filtered/all_genes.csv", header = T)
+
+colnames(counts) <- cells$bc_wells
+rownames(counts) <- genes$gene_name
+
+rownames(cells) <- cells$bc_wells
+seurat_obj_W <- CreateSeuratObject(counts = counts,
+                   assay = "RNA",
+                   meta.data = cells)
+
+# seurat_obj_W@meta.data$timepoint <- NA
+# seurat_obj_W@meta.data$timepoint[which(seurat_obj_W$bc1_well %in% c("A1", "A2", "A3"))] <- "d5"
+# seurat_obj_W@meta.data$timepoint[which(seurat_obj_W$bc1_well %in% c("A4", "A5", "A6"))] <- "d8"
+# seurat_obj_W@meta.data$timepoint[which(seurat_obj_W$bc1_well %in% c("A7", "A8", "A9"))] <- "d11"
+# seurat_obj_W@meta.data$timepoint[which(seurat_obj_W$bc1_well %in% c("A10", "A11", "A12"))] <- "p2"
+# 
+# seurat_obj_W$timepoint <- factor(seurat_obj_W$timepoint, levels = c("d5", "d8", "d11", "p2"))
+
+#Normalization
+seurat_obj_W <- NormalizeData(seurat_obj_W)
+
+#Find highly variable features
+seurat_obj_W <- FindVariableFeatures(seurat_obj_W, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat_obj_W), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_obj_W)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1
+plot2
+
+all.genes <- rownames(seurat_obj_W)
+seurat_obj_W <- ScaleData(seurat_obj_W, features = all.genes)
+
+#Dimensionality reduction
+seurat_obj_W <- RunPCA(seurat_obj_W, features = VariableFeatures(object = seurat_obj_W))
+
+VizDimLoadings(seurat_obj_W, dims = 1:2, reduction = "pca")
+
+DimPlot(seurat_obj_W, reduction = "pca", group.by = "bc1_well")
+
+seurat_obj_W <- RunUMAP(seurat_obj_W, dims = 1:10)
+seurat_obj_W@meta.data
+DimPlot(seurat_obj_W, reduction = "umap",group.by = "bc1_well")
+#DimPlot(seurat_obj_W, reduction = "umap",group.by = "timepoint")
+#DimPlot(seurat_obj_W, reduction = "umap",split.by = "timepoint")
+
+
+mat <- Seurat::GetAssayData(seurat_obj_W, assay = "RNA", slot = "scale.data")
+pca <- seurat_obj_W[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+
+varExplained
+```
+
+
+```{r}
+#Load filtered counts and cell IDs (already QC performed on the cell-level by the Parse preprocessing)
+counts <- readMM(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227Y/all-sample/DGE_filtered/count_matrix.mtx") %>% as.matrix() %>% t()
+
+cells <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227Y/all-sample/DGE_filtered/cell_metadata.csv", header = T)
+
+genes <- read.csv(file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/analysis_new_combined_2227Y/all-sample/DGE_filtered/all_genes.csv", header = T)
+
+colnames(counts) <- cells$bc_wells
+rownames(counts) <- genes$gene_name
+
+rownames(cells) <- cells$bc_wells
+seurat_obj_Y <- CreateSeuratObject(counts = counts,
+                   assay = "RNA",
+                   meta.data = cells)
+
+# seurat_obj_Y@meta.data$timepoint <- NA
+# seurat_obj_Y@meta.data$timepoint[which(seurat_obj_Y$bc1_well %in% c("A1", "A2", "A3"))] <- "d5"
+# seurat_obj_Y@meta.data$timepoint[which(seurat_obj_Y$bc1_well %in% c("A4", "A5", "A6"))] <- "d8"
+# seurat_obj_Y@meta.data$timepoint[which(seurat_obj_Y$bc1_well %in% c("A7", "A8", "A9"))] <- "d11"
+# seurat_obj_Y@meta.data$timepoint[which(seurat_obj_Y$bc1_well %in% c("A10", "A11", "A12"))] <- "p2"
+# 
+# seurat_obj_Y$timepoint <- factor(seurat_obj_Y$timepoint, levels = c("d5", "d8", "d11", "p2"))
+
+#Normalization
+seurat_obj_Y <- NormalizeData(seurat_obj_Y)
+
+#Find highly variable features
+seurat_obj_Y <- FindVariableFeatures(seurat_obj_Y, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat_obj_Y), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_obj_Y)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1
+plot2
+
+all.genes <- rownames(seurat_obj_Y)
+seurat_obj_Y <- ScaleData(seurat_obj_Y, features = all.genes)
+
+#Dimensionality reduction
+seurat_obj_Y <- RunPCA(seurat_obj_Y, features = VariableFeatures(object = seurat_obj_Y))
+
+VizDimLoadings(seurat_obj_Y, dims = 1:2, reduction = "pca")
+
+DimPlot(seurat_obj_Y, reduction = "pca", group.by = "bc1_well")
+
+seurat_obj_Y <- RunUMAP(seurat_obj_Y, dims = 1:10)
+seurat_obj_Y@meta.data
+DimPlot(seurat_obj_Y, reduction = "umap",group.by = "bc1_well")
+#DimPlot(seurat_obj_Y, reduction = "umap",group.by = "timepoint")
+#DimPlot(seurat_obj_Y, reduction = "umap",split.by = "timepoint")
+
+
+mat <- Seurat::GetAssayData(seurat_obj_Y, assay = "RNA", slot = "scale.data")
+pca <- seurat_obj_Y[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+
+varExplained
+```
+
+```{r}
+seurat_obj <- RenameCells(seurat_obj, add.cell.id = "old")
+seurat_obj$batch <- "old"
+seurat_obj_W <- RenameCells(seurat_obj_W, add.cell.id = "W")
+seurat_obj_W$batch <- "W"
+seurat_obj_Y <- RenameCells(seurat_obj_Y, add.cell.id = "Y")
+seurat_obj_Y$batch <- "Y"
+
+seurat_obj_merge <- merge(seurat_obj, merge(seurat_obj_W, seurat_obj_Y), merge.data = TRUE)
+rm(seurat_obj)
+rm(seurat_obj_W)
+rm(seurat_obj_Y)
+rm(counts)
+gc()
+```
+
+```{r}
+#Normalization
+seurat_obj_merge <- NormalizeData(seurat_obj_merge)
+
+#Find highly variable features
+seurat_obj_merge <- FindVariableFeatures(seurat_obj_merge, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat_obj_merge), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_obj_merge)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1
+plot2
+
+all.genes <- rownames(seurat_obj_merge)
+seurat_obj_merge <- ScaleData(seurat_obj_merge, features = all.genes)
+
+#Dimensionality reduction
+seurat_obj_merge <- RunPCA(seurat_obj_merge, features = VariableFeatures(object = seurat_obj_merge))
+
+VizDimLoadings(seurat_obj_merge, dims = 1:2, reduction = "pca")
+
+DimPlot(seurat_obj_merge, reduction = "pca", group.by = "bc1_well")
+
+seurat_obj_merge <- RunUMAP(seurat_obj_merge, dims = 1:10)
+seurat_obj_merge@meta.data
+#DimPlot(seurat_obj_merge, reduction = "umap",group.by = "bc1_mergeell")
+#DimPlot(seurat_obj_merge, reduction = "umap",group.by = "timepoint")
+#DimPlot(seurat_obj_merge, reduction = "umap",split.by = "timepoint")
+
+
+mat <- Seurat::GetAssayData(seurat_obj_merge, assay = "RNA", slot = "scale.data")
+pca <- seurat_obj_merge[["pca"]]
+
+# Get the total variance:
+total_variance <- sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev)^2  ## EigenValues
+varExplained = eigValues / total_variance
+
+varExplained
+```
+```{r}
+DimPlot(seurat_obj_merge, reduction = "umap",group.by = "batch")
+```
+
+```{r}
+seurat_obj_merge$batch[which(seurat_obj_merge$batch %in% c("W", "Y"))] <- "new"
+
+seurat_obj_merge.list <- SplitObject(seurat_obj_merge, split.by = "batch")
+
+for (i in 1:length(seurat_obj_merge.list)) {
+    seurat_obj_merge.list[[i]] <- NormalizeData(seurat_obj_merge.list[[i]], verbose = FALSE)
+    seurat_obj_merge.list[[i]] <- FindVariableFeatures(seurat_obj_merge.list[[i]], selection.method = "vst", 
+        nfeatures = 2000, verbose = FALSE)
+}
+
+anchors <- FindIntegrationAnchors(object.list = seurat_obj_merge.list, dims = 1:30)
+
+seurat_obj_merge.integrated <- IntegrateData(anchorset = anchors, dims = 1:30)
+
+# switch to integrated assay. The variable features of this assay are automatically
+# set during IntegrateData
+DefaultAssay(seurat_obj_merge.integrated) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+seurat_obj_merge.integrated <- ScaleData(seurat_obj_merge.integrated, verbose = FALSE)
+seurat_obj_merge.integrated <- RunPCA(seurat_obj_merge.integrated, npcs = 30, verbose = FALSE)
+seurat_obj_merge.integrated <- RunUMAP(seurat_obj_merge.integrated, reduction = "pca", dims = 1:30)
+p1 <- DimPlot(seurat_obj_merge.integrated, reduction = "umap", group.by = "batch")
+p2 <- DimPlot(seurat_obj_merge.integrated, reduction = "umap", split.by = "batch")
+p1
+p2
+```
+
+
+
+
+```{r}
+DefaultAssay(seurat_obj_merge.integrated) <- "RNA"
+FeaturePlot(seurat_obj_merge.integrated, features = c("SOX2", "MAP2", "SOX10", "NR2F1", "TFAP2A", "TWIST1", "NFIA", "RUNX1", "SPP1")) & coord_fixed() & xlab("") & ylab("") & theme(axis.text = element_blank())
+```
+
+```{r}
+saveRDS(seurat_obj_merge.integrated, file = "/fast/AG_Grosswendt/meibl/analyses/Lineages_reference/example_data/Seurat_integrated_old_new.rds")
+```
+
+
+
+```{r}
+DefaultAssay(seurat_obj_merge.integrated) <- "integrated"
+
+seurat_obj_merge.integrated <- FindNeighbors(seurat_obj_merge.integrated, dims = 1:30)
+seurat_obj_merge.integrated <- FindClusters(seurat_obj_merge.integrated, resolution = 0.4)
+Idents(seurat_obj_merge.integrated) <- seurat_obj_merge.integrated$integrated_snn_res.0.4
+DimPlot(seurat_obj_merge.integrated, reduction = "umap")
+p2 <- DimPlot(seurat_obj_merge.integrated, reduction = "umap") + coord_fixed() + xlab("") + ylab("") + theme(axis.text = element_blank())
+LabelClusters(p2, id="ident", fontface = "bold", size=6)
+```
+
+```{r}
+Idents(seurat_obj_merge.integrated) <- seurat_obj_merge.integrated$integrated_snn_res.0.4
+DimPlot(seurat_obj_merge.integrated)
+
+DefaultAssay(seurat_obj_merge.integrated) <- "RNA"
+
+seurat_object_diet <- DietSeurat(seurat_obj_merge.integrated, counts = TRUE, data = TRUE, scale.data = FALSE)
+
+SaveH5Seurat(seurat_object_diet, filename = "seurat_object_diet_integrated_old_new.h5Seurat")
+
+Convert("seurat_object_diet_integrated_old_new.h5Seurat", dest = "h5ad")
+```
+
+```{r}
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:10)
+seurat_obj <- FindClusters(seurat_obj, resolution = 0.4)
+Idents(seurat_obj) <- seurat_obj$RNA_snn_res.0.4
+Idents(seurat_obj) <- seurat_obj$timepoint
+p0 <- DimPlot(seurat_obj, reduction = "pca")
+p1 <- DimPlot(seurat_obj, reduction = "umap")
+Idents(seurat_obj) <- seurat_obj$RNA_snn_res.0.4
+p2 <- DimPlot(seurat_obj, reduction = "umap")
+
+p0+p1+LabelClusters(p2, id="ident", fontface = "bold", size=6)
+
+```
+
+```{r}
+FeaturePlot(seurat_obj, features = c("SOX2", "PAX7", "SOX9", "SOX10", "TFAP2A", "TWIST1", "RUNX1", "SPP1", "NFIA"))
+```
+
+
+
+
+
+```{r}
+scDRS_scores <- read.table(file = "./nsCLP_Welzenbach2021.score", sep = "\t", header = T)
+
+seurat_obj$scDRS_score <- scDRS_scores$norm_score
+
+p_scDRS <- FeaturePlot(seurat_obj, "scDRS_score") +
+  scale_color_gradient2(low="blue", mid="white", high="red", space ="Lab" )
+```
+
+```{r}
+scDRS_group <- read.table("nsCLP_Welzenbach2021.scdrs_group.seurat_clusters", header = T, sep = "\t")
+
+seurat_obj$assoc_mcp <- NA
+seurat_obj$hetero_mcp <- NA
+
+for (i in 1:ncol(seurat_obj)) {
+  seurat_obj$assoc_mcp[i] <-
+    scDRS_group$assoc_mcp[which(scDRS_group$group == seurat_obj$RNA_snn_res.0.4[i])]
+  
+  seurat_obj$hetero_mcp[i] <-
+    scDRS_group$hetero_mcp[which(scDRS_group$group == seurat_obj$RNA_snn_res.0.4[i])]
+  
+}
+
+seurat_obj$assoc_mcp <- round(seurat_obj$assoc_mcp, 3)
+seurat_obj$hetero_mcp <- round(seurat_obj$hetero_mcp, 3)
+
+seurat_obj$assoc_mcp[seurat_obj$assoc_mcp > 0.05] <- "n.s."
+seurat_obj$assoc_mcp <- as.factor(seurat_obj$assoc_mcp)
+
+seurat_obj$hetero_mcp[seurat_obj$hetero_mcp > 0.05] <- "n.s."
+seurat_obj$hetero_mcp <- as.factor(seurat_obj$hetero_mcp)
+
+Idents(seurat_obj) <- seurat_obj$assoc_mcp
+p1 <- DimPlot(seurat_obj, cols = c("#c51b8a", "#f768a1", "gray70" )) +
+  labs(title = "cluster - OFC\nassociation", color = "Monte Carlo\np-value")
+
+Idents(seurat_obj) <- seurat_obj$hetero_mcp
+p2 <- DimPlot(seurat_obj, cols = c("#7a0177", "gray70" )) +
+  labs(title = "heterogeneity cluster - OFC\nassociation", color = "Monte Carlo\np-value")
+```
+
+```{r}
+p_scDRS | p1 | p2
+```
+

@@ -1,0 +1,529 @@
+---
+title: "NMF_analyis"
+output: html_document
+date: "2025-05-18"
+---
+
+
+```{r}
+library(BiocStyle)
+library(ButchR)
+library(knitr)
+library(ComplexHeatmap)
+library(viridis)
+library(tidyverse)
+```
+
+
+```{r}
+f_DAT = list.files(file.path(HOME, DIR_DAT))[grep('_score.txt', list.files(file.path(HOME, DIR_DAT)))]
+#  "d11_merge_TFTG_score.txt" "d5_merge_TFTG_score.txt"  "d8_merge_TFTG_score.txt"  "p2_merge_TFTG_score.txt" 
+ranks = 3:25
+MultiNMF(f_DAT, ranks=ranks, savedir=file.path(HOME, DIR_DEDAT))
+```
+
+
+```{r}
+# Function: CorSigMat
+CorSigMat <- function(f_DAT, file_paths, optk_list) {
+  all_H = list()
+  all_W = list()
+  all_Hm = list()
+
+  for (i in seq_along(f_DAT)) {
+    timepoint <- f_DAT[i]
+    file_path <- file_paths[i]
+    nmf_res <- readRDS(file_path)
+
+    key <- paste0("k", optk_list[[timepoint]])
+
+    H <- nmf_res@HMatrix[[key]]
+    W <- nmf_res@WMatrix[[key]]
+
+    Hm <- H
+    colnames(Hm) <- paste0(timepoint, "_R", 1:ncol(H))
+
+    all_Hm[[timepoint]] <- Hm
+    all_H[[timepoint]] <- H
+    all_W[[timepoint]] <- W
+  }
+
+  combined_Hm <- do.call(cbind, all_Hm)
+  return(list(combined_Hm, all_H))
+}
+
+
+
+
+# Function: JaccardSimMat
+JaccardSimMat <- function(combined_metagene, num, useH=FALSE) {
+  cormatrix = if (!useH) combined_metagene else t(combined_metagene)
+  cm_filter = data.frame(matrix(0, nrow=ncol(cormatrix), ncol=ncol(cormatrix)))
+  colnames(cm_filter) = rownames(cm_filter) = colnames(cormatrix)
+
+  pairds = t(combn(colnames(cormatrix), 2))
+
+  for (i in 1:nrow(pairds)) {
+    g1 = pairds[i,1]; g2 = pairds[i,2]
+    if (gsub("_R.*", "", g1) != gsub("_R.*", "", g2)) {
+      v1 = cormatrix[,g1]; names(v1) = rownames(cormatrix[,g1,drop=FALSE])
+      v2 = cormatrix[,g2]; names(v2) = rownames(cormatrix[,g2,drop=FALSE])
+      n1 = names(sort(v1, decreasing=TRUE)[1:num])
+      n2 = names(sort(v2, decreasing=TRUE)[1:num])
+      Js = length(intersect(n1,n2)) / length(union(n1,n2))
+      cm_filter[g1,g2] = cm_filter[g2,g1] = Js
+    }
+  }
+  return(cm_filter)
+}
+
+# Function: RBHSigGraph
+RBHSigGraph <- function(cm, f_DAT) {
+  roundposneg <- function(x, type) {
+    x.tmp = x
+    if (type == "pos") x.tmp[x.tmp < 0] = 0 else x.tmp[x.tmp > 0] = 0
+    return(x.tmp)
+  }
+
+  f_DAT = gsub('_.*','', f_DAT)
+  cm_pos = roundposneg(cm, type="pos")
+  cm_pos[cm_pos == 1] = 0
+  cmRBH = matrix(0, nrow=nrow(cm), ncol=ncol(cm), dimnames=dimnames(cm))
+
+  pairds = t(combn(f_DAT, 2))
+  RBH_ind = data.frame(matrix(NA, ncol=2, nrow=nrow(cm)*ncol(cm)))
+  ind0 = 1
+
+  for (i in 1:nrow(pairds)) {
+    sr = grepl(pairds[i,1], colnames(cm_pos), fixed=TRUE)
+    sc = grepl(pairds[i,2], rownames(cm_pos), fixed=TRUE)
+    selectds = cm_pos[sr,sc]
+    msr = max.col(selectds, "first")
+    msc = max.col(t(selectds), "first")
+
+    if (length(msr) > 0 & length(msc) > 0) {
+      for (n in 1:length(msr)) {
+        if (msc[msr[n]] == n) {
+          RBH_ind[ind0,1] <- colnames(cm_pos)[sr][n]
+          RBH_ind[ind0,2] <- colnames(cm_pos)[sc][msr[n]]
+          ind0 = ind0 + 1
+        }
+      }
+    }
+  }
+  RBH_ind_pos = na.omit(RBH_ind)
+  for (i in 1:nrow(RBH_ind_pos)) {
+    r = RBH_ind_pos[i,1]
+    c = RBH_ind_pos[i,2]
+    cmRBH[r,c] = cm_pos[r,c]
+  }
+  return(cmRBH)
+}
+
+# Function: gg_plotKStats
+gg_plotKStats <- function(nmf_exp,
+                          plot_vars = c("FrobError", "FrobError_cv", "meanAmariDist",
+                                        "sumSilWidth", "meanSilWidth", "copheneticCoeff"),
+                          help = FALSE) {
+  all_metrics <- c(
+    "FrobError (-)" = "FrobError",
+    "FrobError_min (-)" = "FrobError_min",
+    "FrobError_mean (-)" = "FrobError_mean",
+    "FrobError_cv (-)" = "FrobError_cv",
+    "FrobError_sd (-)" = "FrobError_sd",
+    "meanAmariDist (-)" = "meanAmariDist",
+    "sumSilWidth (+)" = "sumSilWidth",
+    "meanSilWidth (+)" = "meanSilWidth",
+    "copheneticCoeff (+)" = "copheneticCoeff"
+  )
+
+  frob_df <- nmf_exp@FrobError %>%
+    pivot_longer(everything(), names_to = "k", values_to = "Stat") %>%
+    mutate(Metric = "FrobError", k = as.numeric(sub("^k", "", k)))
+  metrics_df <- nmf_exp@OptKStats[,-1] %>%
+    pivot_longer(names_to = "Metric", values_to = "Stat", -k)
+
+  plot_data <- bind_rows(frob_df, metrics_df) %>%
+    filter(Metric %in% plot_vars) %>%
+    mutate(Metric = factor(Metric, levels = all_metrics))
+  if (help) {
+    plot_data <- plot_data %>% mutate(Metric = factor(Metric, levels = all_metrics, labels = names(all_metrics)))
+  }
+
+  ggplot(plot_data, aes(x = k, y = Stat)) +
+    #geom_vline(xintercept = nmf_exp@OptK, color = "firebrick") +
+    geom_point() +
+    facet_wrap(. ~ Metric, scales = "free", drop = TRUE) +
+    theme_bw() +
+    {if (help) labs(caption = "Metrics suffixed with (-) should be minimized, those suffixed with (+) should be maximized") else NULL}
+}
+```
+
+```{r}
+# Main execution
+HOME = "./NMF"
+DIR_DAT = 'example_matrices'    
+DIR_DEDAT = 'example_matrices/TFS_decom'
+DIR_RES =  'example_matrices/results'
+
+file.path(HOME, DIR_DEDAT)
+# Diagnostic plot example for one time point
+
+nmf_res_d5 = readRDS("./NMF/example_matrices/TFS_decom/d5_merge_TFTG_score.txt_decom.rds")
+gg_plotKStats(nmf_res_d5)
+nmf_res_d8 = readRDS("./NMF/example_matrices/TFS_decom/d8_merge_TFTG_score.txt_decom.rds")
+gg_plotKStats(nmf_res_d8)
+nmf_res_d11 = readRDS("./NMF/example_matrices/TFS_decom/d11_merge_TFTG_score.txt_decom.rds")
+gg_plotKStats(nmf_res_d11)
+nmf_res_p2 = readRDS("./NMF/example_matrices/TFS_decom/p2_merge_TFTG_score.txt_decom.rds")
+gg_plotKStats(nmf_res_p2)
+
+(gg_plotKStats(nmf_res_d5) + gg_plotKStats(nmf_res_d8)) /
+  (gg_plotKStats(nmf_res_d11) + gg_plotKStats(nmf_res_p2))
+
+all_Hm <- list()
+all_H <- list()
+all_W <- list()
+
+H <- nmf_res_d5@HMatrix[["k5"]]
+W <- nmf_res_d5@WMatrix[["k5"]]
+
+Hm <- t(H)
+rownames(Hm) <- nmf_res_d5@input_matrix$colnames
+colnames(Hm) <- c("d5_Sig1", "d5_Sig2", "d5_Sig3", "d5_Sig4", "d5_Sig5")
+
+all_Hm[["d5"]] <- Hm
+all_H[["d5"]] <- H
+all_W[["d5"]] <- W
+
+H <- nmf_res_d8@HMatrix[["k5"]]
+W <- nmf_res_d8@WMatrix[["k5"]]
+
+Hm <- t(H)
+rownames(Hm) <- nmf_res_d8@input_matrix$colnames
+colnames(Hm) <- c("d8_Sig1", "d8_Sig2", "d8_Sig3", "d8_Sig4", "d8_Sig5")
+
+all_Hm[["d8"]] <- Hm
+all_H[["d8"]] <- H
+all_W[["d8"]] <- W
+
+
+H <- nmf_res_d11@HMatrix[["k5"]]
+W <- nmf_res_d11@WMatrix[["k5"]]
+
+Hm <- t(H)
+rownames(Hm) <- nmf_res_d11@input_matrix$colnames
+colnames(Hm) <- c("d11_Sig1", "d11_Sig2", "d11_Sig3", "d11_Sig4", "d11_Sig5")
+
+all_Hm[["d11"]] <- Hm
+all_H[["d11"]] <- H
+all_W[["d11"]] <- W
+
+H <- nmf_res_p2@HMatrix[["k7"]]
+W <- nmf_res_p2@WMatrix[["k7"]]
+
+Hm <- t(H)
+rownames(Hm) <- nmf_res_p2@input_matrix$colnames
+colnames(Hm) <- c("p2_Sig1", "p2_Sig2", "p2_Sig3", "p2_Sig4", "p2_Sig5", "p2_Sig6", "p2_Sig7")
+
+all_Hm[["p2"]] <- Hm
+all_H[["p2"]] <- H
+all_W[["p2"]] <- W
+
+
+combined_Hm <- do.call(cbind, all_Hm)
+
+head(combined_Hm)
+
+write.csv(combined_Hm, file = "./NMF/example_matrices/TFS_decom/combined_Hm.csv")
+```
+
+```{r}
+JaccardSimMat <- function(combined_metagene, num, useH=FALSE) {
+  cormatrix = if (!useH) combined_metagene else t(combined_metagene)
+  cm_filter = data.frame(matrix(0, nrow=ncol(cormatrix), ncol=ncol(cormatrix)))
+  colnames(cm_filter) = rownames(cm_filter) = colnames(cormatrix)
+
+  pairds = t(combn(colnames(cormatrix), 2))
+
+  for (i in 1:nrow(pairds)) {
+    g1 = pairds[i,1]; g2 = pairds[i,2]
+    
+    # Extract timepoint from names like "d5_Sig1", "p2_Sig7"
+    tp1 = sub("_.*", "", g1)
+    tp2 = sub("_.*", "", g2)
+    
+    if (tp1 != tp2) {  # Only compare across timepoints
+      v1 = cormatrix[,g1]; names(v1) = rownames(cormatrix[,g1, drop=FALSE])
+      v2 = cormatrix[,g2]; names(v2) = rownames(cormatrix[,g2, drop=FALSE])
+      n1 = names(sort(v1, decreasing=TRUE)[1:num])
+      n2 = names(sort(v2, decreasing=TRUE)[1:num])
+      Js = length(intersect(n1, n2)) / length(union(n1, n2))
+      cm_filter[g1, g2] = cm_filter[g2, g1] = Js
+    }
+  }
+  return(cm_filter)
+}
+
+cm <- JaccardSimMat(combined_Hm, num = 50)
+
+cm_filter <- RBHSigGraph(cm, c("d5", "d8", "d11", "p2"))
+
+```
+
+```{r}
+# Visualization preparation
+nonzero_cols <- colSums(combined_Hm != 0) > 0
+
+# Subset both rows and columns to keep only the non-zero columns
+combined_Hm <- combined_Hm[, nonzero_cols]
+
+combined_Hm_MMS <- mmscaling(x=combined_Hm, by=2)
+sigH <- combined_Hm_MMS
+
+showtopNum <- 30
+top_gene <- lapply(1:ncol(sigH), function(c) names(sort(sigH[,c], decreasing=TRUE)[1:showtopNum]))
+top_gene_uni <- unique(unlist(top_gene))
+sigH_top <- sigH[rownames(sigH) %in% top_gene_uni, ]
+
+
+sigNMF_plot <- sigH_top
+sigNMF_plot_annot <- data.frame(
+  sig = colnames(sigNMF_plot),
+  timepoint = gsub('_.*','', colnames(sigNMF_plot))
+)
+sigNMF_plot_annot$timepoint <- factor(sigNMF_plot_annot$timepoint, levels=c('d5','d8','d11','p2'))
+sigNMF_plot <- sigNMF_plot[rowSums(sigNMF_plot) > quantile(rowSums(sigNMF_plot))[[3]], ]
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+# Step 1: Define color mapping using ggplot-style hues
+gg_colors <- gg_color_hue(4)
+names(gg_colors) <- c("d5", "d8", "d11", "p2")
+
+# Step 2: Plug into HeatmapAnnotation
+top_annot <- HeatmapAnnotation(
+  timepoint = sigNMF_plot_annot$timepoint,
+  col = list(timepoint = gg_colors),
+  show_legend = F
+)
+
+# Step 3: Add to your heatmap call
+ht3 <- Heatmap(sigNMF_plot, name='expo_norm',
+        cluster_row_slices=FALSE, cluster_column_slices=FALSE,
+        cluster_rows = TRUE, cluster_columns = TRUE, show_column_dend = FALSE, show_row_dend = FALSE,
+        show_row_names = TRUE, show_column_names = TRUE, row_title='TFs', row_names_side = "left",
+        row_names_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 5), column_names_rot = 45,
+        use_raster = TRUE,
+        column_split = sigNMF_plot_annot$timepoint,
+        heatmap_legend_param = list(title = "expo_norm"),
+        top_annotation = top_annot,
+        col = colorRamp2(seq(min(sigNMF_plot), 0.4, length = 3), c("white", "#87CEEB", "#1b3b98"))
+)
+
+ht3
+
+write.csv(data.frame(rownames = rownames(sigNMF_plot)), file = "ht3_rownames_top30.csv", row.names = FALSE)
+
+```
+
+```{r}
+# 2 - plot the decoder-like plot
+cm_filter = cm_filter
+
+row_n = which(cm_filter!=0, arr.ind = T)[,1]
+col_n = which(cm_filter!=0, arr.ind = T)[,2]
+
+df_cm_filter = data.frame(  s1=rownames(cm_filter)[row_n], 
+                            s1_tp = rownames(cm_filter)[row_n] %>% gsub('_.*','',.),
+                            s2=colnames(cm_filter)[col_n],
+                            s2_tp = colnames(cm_filter)[col_n] %>% gsub('_.*','',.),
+                            cor=sapply(1:nrow(which(cm_filter!=0, arr.ind = T)), function(x) { cm_filter[unname(which(cm_filter!=0, arr.ind = T)[,1][x]), unname(which(cm_filter!=0, arr.ind = T)[,2][x])] })
+                            )
+df_cm_filter = df_cm_filter[, c("s1","s2","s1_tp","s2_tp","cor" )]
+
+df_cm_filter_gg = data.frame(rbindlist(list(df_cm_filter[,c('s1','s1_tp')],df_cm_filter[,c('s2','s2_tp')])))
+colnames(df_cm_filter_gg) = c('s','tp')
+df_cm_filter_gg = df_cm_filter_gg[!duplicated(df_cm_filter_gg$s), ]
+vcol = 1:4
+names(vcol) = c('d5','d8','d11', 'p2')
+df_cm_filter_gg$x =unname(vcol[df_cm_filter_gg$tp])
+df_cm_filter_gg = df_cm_filter_gg[order(df_cm_filter_gg$x), ]
+df_cm_filter_gg$y = unlist(sapply(names(table(df_cm_filter_gg$x)), function(c)  c(scale(sample(x = 1:table(df_cm_filter_gg$x)[c],size = table(df_cm_filter_gg$x)[c],replace = F), scale=FALSE))  ))
+df_cm_filter
+
+df_curve = Reduce('rbind', lapply(1:nrow(df_cm_filter), function(r) {
+    x1 = df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r,'s1'], 'x']
+    y1 = df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r,'s1'], 'y']
+    x2 = df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r,'s2'], 'x']
+    y2 = df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r,'s2'], 'y']
+    df <- data.frame(x1 = x1, x2 = x2, y1 = y1, y2 = y2, type=paste0(sort(c(x1,x2)), collapse='-'), cor=df_cm_filter[r,'cor'])
+}))
+
+p_nn = ggplot(df_cm_filter_gg, aes(x=x, y=y)) +  geom_point(color='black', fill='grey7', size=3, pch=21) + 
+        geom_curve( data=df_curve, aes(x = x1, y = y1, xend = x2, yend = y2, color=type, linewidth = cor), curvature = 0.19, lineend = "butt" ) +  # linewidth = 1.5 
+        scale_linewidth(range = c(0.5, 2)) + # geom_text(label=df_cm_filter_gg$s, nudge_x = 0.25, nudge_y = 0.25, label.size = 0.35, check_overlap = T) + 
+        geom_text(data = df_cm_filter_gg, aes(label = s),nudge_x = 0.25, nudge_y = 0, size=2) + 
+        labs(x='time point') + scale_x_continuous(labels= names(vcol)) + 
+        theme_minimal() + scale_color_jco(alpha=.6) + theme(plot.margin = unit(c(.8,.8,.8,.8), "cm"))
+
+#pdf(file.path(HOME, DIR_RES, paste0('fig0_ggplotgraph','_ranks_',min(ranks),'_',max(ranks),"_num",numJS,".pdf")), width=6, height=3.5)
+p_nn
+#dev.off()
+```
+```{r}
+#nonzero_idx <- which(cm_filter != 0, arr.ind = TRUE)
+#row_n <- nonzero_idx[, 1]
+#col_n <- nonzero_idx[, 2]
+
+# 2. Build the long-form data frame for all edges
+df_cm_filter <- data.frame(
+  s1 = rownames(cm_filter),
+  s1_tp = gsub("_.*", "", rownames(cm_filter)),
+  s2 = colnames(cm_filter),
+  s2_tp = gsub("_.*", "", colnames(cm_filter)),
+  cor = cm_filter
+)
+
+# 3. Build the node data (signature positions)
+df_cm_filter_gg <- data.frame(rbindlist(list(
+  df_cm_filter[, c("s1", "s1_tp")] %>% setNames(c("s", "tp")),
+  df_cm_filter[, c("s2", "s2_tp")] %>% setNames(c("s", "tp"))
+)))
+df_cm_filter_gg <- df_cm_filter_gg[!duplicated(df_cm_filter_gg$s), ]
+
+# 4. Map timepoints to x-positions
+tp_levels <- c("d5", "d8", "d11", "p2")
+vcol <- setNames(seq_along(tp_levels), tp_levels)
+df_cm_filter_gg$x <- vcol[df_cm_filter_gg$tp]
+
+# 5. Assign y positions (random but reproducible)
+set.seed(42)
+df_cm_filter_gg <- df_cm_filter_gg[order(df_cm_filter_gg$x), ]
+df_cm_filter_gg$y <- unlist(
+  sapply(names(table(df_cm_filter_gg$x)), function(c) {
+    scale(sample(seq_len(table(df_cm_filter_gg$x)[c])), scale = FALSE)
+  })
+)
+
+# Create edge (curve) data
+df_curve <- Reduce('rbind', lapply(1:nrow(df_cm_filter), function(r) {
+  x1 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's1'], 'x']
+  y1 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's1'], 'y']
+  x2 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's2'], 'x']
+  y2 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's2'], 'y']
+  
+  data.frame(
+    x1 = x1, x2 = x2,
+    y1 = y1, y2 = y2,
+    type = paste0(sort(c(x1, x2)), collapse = '-'),
+    cor = df_cm_filter[r, 'cor']
+  )
+}))
+
+# Decoder-like plot
+p_nn <- ggplot(df_cm_filter_gg, aes(x = x, y = y)) +  
+  geom_point(color = 'black', fill = 'grey7', size = 3, pch = 21) + 
+  geom_curve(
+    data = df_curve, 
+    aes(x = x1, y = y1, xend = x2, yend = y2, color = type, linewidth = cor), 
+    curvature = 0.19, lineend = "butt"
+  ) +
+  scale_linewidth(range = c(0.5, 2)) +
+  geom_text(
+    data = df_cm_filter_gg, 
+    aes(label = s), 
+    nudge_x = 0.25, nudge_y = 0, size = 2
+  ) +
+  labs(x = 'Time Point', y = '') +
+  scale_x_continuous(labels = names(vcol), breaks = vcol) +
+  theme_minimal(base_size = 10) +
+  scale_color_jco(alpha = 0.6) +
+  theme(
+    plot.margin = unit(c(0.8, 0.8, 0.8, 0.8), "cm"),
+    legend.position = "none"
+  )
+
+# Display the plot
+p_nn
+
+```
+```{r}
+# Get all unique signatures and their timepoints
+all_sigs <- union(rownames(cm_filter), colnames(cm_filter))
+all_sigs_tp <- gsub('_.*', '', all_sigs)
+
+df_cm_filter_gg <- data.frame(s = all_sigs, tp = all_sigs_tp)
+
+# Define x-axis positions per timepoint
+vcol <- c('d5' = 1, 'd8' = 2, 'd11' = 3, 'p2' = 4)
+df_cm_filter_gg$x <- vcol[df_cm_filter_gg$tp]
+
+# Assign y positions within each timepoint using scaled stacking
+df_cm_filter_gg <- df_cm_filter_gg[order(df_cm_filter_gg$x), ]
+df_cm_filter_gg$y <- unlist(sapply(
+  names(table(df_cm_filter_gg$x)), 
+  function(tp) scale(seq_len(table(df_cm_filter_gg$x)[tp]), scale = FALSE)
+))
+
+# --- Prepare edge data from non-zero Jaccard similarities ---
+
+# Get indices of non-zero entries
+row_n <- which(cm_filter != 0, arr.ind = TRUE)[, 1]
+col_n <- which(cm_filter != 0, arr.ind = TRUE)[, 2]
+
+# Create dataframe of connections
+df_cm_filter <- data.frame(
+  s1 = rownames(cm_filter)[row_n],
+  s2 = colnames(cm_filter)[col_n],
+  s1_tp = gsub('_.*', '', rownames(cm_filter)[row_n]),
+  s2_tp = gsub('_.*', '', colnames(cm_filter)[col_n]),
+  cor = sapply(seq_along(row_n), function(x) cm_filter[row_n[x], col_n[x]])
+)
+
+# Generate curved edges from node coordinates
+df_curve <- Reduce('rbind', lapply(1:nrow(df_cm_filter), function(r) {
+  x1 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's1'], 'x']
+  y1 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's1'], 'y']
+  x2 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's2'], 'x']
+  y2 <- df_cm_filter_gg[df_cm_filter_gg$s == df_cm_filter[r, 's2'], 'y']
+  
+  data.frame(
+    x1 = x1, y1 = y1,
+    x2 = x2, y2 = y2,
+    type = paste0(sort(c(x1, x2)), collapse = '-'),
+    cor = df_cm_filter[r, 'cor']
+  )
+}))
+
+# --- Plot: decoder-like graph ---
+
+timepoint_colors <- gg_color_hue(4)
+names(timepoint_colors) <- c('d5', 'd8', 'd11', 'p2')
+
+p_nn <- ggplot(df_cm_filter_gg, aes(x = x, y = y)) +  
+  geom_point(aes(fill = tp), color = 'black', size = 3, pch = 21) +
+  geom_curve(
+    data = df_curve,
+    aes(x = x1, y = y1, xend = x2, yend = y2, color = type, linewidth = cor),
+    curvature = 0.19, lineend = "butt"
+  ) +
+  geom_text(aes(label = s), nudge_x = 0.25, nudge_y = 0, size = 3) +
+  scale_linewidth(range = c(0.5, 2)) +
+  scale_x_continuous(breaks = vcol, labels = names(vcol)) +
+  scale_fill_manual(values = timepoint_colors, name = "Timepoint") + # fill for nodes
+  scale_color_jco(alpha = 0.6, guide = "none") +  # edge color type, hidden
+  theme_minimal(base_size = 10) +
+  labs(x = 'Time Point', y = '') +
+  theme(
+    legend.position = "right",
+    text = element_text(size=14),
+    plot.margin = unit(c(0.8, 0.8, 0.8, 0.8), "cm")
+  )
+
+# Show plot
+p_nn
+```

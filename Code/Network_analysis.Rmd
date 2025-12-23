@@ -1,0 +1,174 @@
+---
+title: "network_analysis"
+author: "Michael Eibl"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+#libraries
+library("tidyverse")
+```
+
+```{r}
+odb <- org.Hs.eg.db
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+```
+
+Networks were obtained by following the PECA2 instructions (Duren et al., 2019), running on the bwHPC, see https://github.com/SUwonglab/PECA
+
+Read in trans-regulation score (TRS) matrices, as available at https://doi.org/10.6084/m9.figshare.30920222
+
+```{r}
+d5 <- read.table(file = "./networks/d5_merge/TFTG_score_norm.txt", header = T)
+rownames(d5) <- d5$TFName; d5$TFName <- NULL
+
+d8 <- read.table(file = "./networks/d8_merge/TFTG_score_norm.txt", header = T)
+rownames(d8) <- d8$TFName; d8$TFName <- NULL
+
+d11 <- read.table(file = "./networks/d11_merge/TFTG_score_norm.txt", header = T)
+rownames(d11) <- d11$TFName; d11$TFName <- NULL
+
+p2 <- read.table(file = "./networks/p2_merge/TFTG_score_norm.txt", header = T)
+rownames(p2) <- p2$TFName; p2$TFName <- NULL
+
+```
+
+Obtain example subnetworks for visualization. Query 5 well-known TFs in this biological context. 3 top TGs (based on TRS). Visualization of csv networks in Cytoscape.
+
+```{r}
+example_network_nodes <- c("SOX2", "OTX2", "PAX6", "ZIC2", "SIX3")
+
+SOX2_targets <- colnames(d5["SOX2", head(order(as.numeric(d5["SOX2",]), decreasing = T), 3) ])
+PAX3_targets <- colnames(d5["PAX3", head(order(as.numeric(d5["PAX3",]), decreasing = T), 3) ])
+ZIC2_targets <- colnames(d5["ZIC2", head(order(as.numeric(d5["ZIC2",]), decreasing = T), 3) ])
+SIX3_targets <- colnames(d5["SIX3", head(order(as.numeric(d5["SIX3",]), decreasing = T), 3) ])
+OTX2_targets <- colnames(d5["OTX2", head(order(as.numeric(d5["OTX2",]), decreasing = T), 3) ])
+
+targets <- unique(c(SOX2_targets,
+                    PAX6_targets,
+                    ZIC2_targets,
+                    SIX3_targets,
+                    OTX2_targets,
+                    "SOX2", "PAX6", "ZIC2", "SIX3", "OTX2"))
+"ZNF814" %in% rownames(p2)
+sources <- unique(c(example_network_nodes, intersect(targets, rownames(d5))))
+length(sources)
+
+d5_subnetwork <- d5[sources,targets]
+
+d5_subnetwork$TF <- rownames(d5_subnetwork)
+
+d5_subnetwork <- melt(d5_subnetwork,id.vars = "TF")
+
+d5_subnetwork <- d5_subnetwork %>% filter(value > 30)
+
+#d5_subnetwork$value <- log2(d5_subnetwork$value)
+
+d5_subnetwork %>%
+  write.csv(file = "d5_subnetwork_for_plot.csv", quote = F)
+```
+
+```{r}
+example_network_nodes <- c("RAX", "MEIS1", "PAX7", "SOX10", "FOXD3")
+
+RAX_targets <- colnames(d8["RAX", head(order(as.numeric(d8["RAX",]), decreasing = T), 3) ])
+PAX7_targets <- colnames(d8["PAX7", head(order(as.numeric(d8["PAX7",]), decreasing = T), 3) ])
+SOX10_targets <- colnames(d8["SOX10", head(order(as.numeric(d8["SOX10",]), decreasing = T), 3) ])
+FOXD3_targets <- colnames(d8["FOXD3", head(order(as.numeric(d8["FOXD3",]), decreasing = T), 3) ])
+MEIS1_targets <- colnames(d8["MEIS1", head(order(as.numeric(d8["MEIS1",]), decreasing = T), 3) ])
+
+targets <- unique(c(RAX_targets,
+                    PAX7_targets,
+                    SOX10_targets,
+                    FOXD3_targets,
+                    MEIS1_targets,
+                    "RAX", "PAX7", "SOX10", "FOXD3", "MEIS1"))
+
+sources <- unique(c(example_network_nodes, intersect(targets, rownames(d8))))
+length(sources)
+d8_subnetwork <- d8[sources,targets]
+
+d8_subnetwork$TF <- rownames(d8_subnetwork)
+
+d8_subnetwork <- melt(d8_subnetwork,id.vars = "TF")
+
+d8_subnetwork <- d8_subnetwork %>% filter(value > 30)
+
+#d8_subnetwork$value <- log2(d8_subnetwork$value)
+
+d8_subnetwork %>%
+  write.csv(file = "d8_subnetwork_for_plot.csv", quote = F)
+```
+
+```{r}
+example_network_nodes <- c("HOXA2", "NR2F1", "RARB", "RFX4", "ALX4")
+
+HOXA2_targets <- colnames(d11["HOXA2", head(order(as.numeric(d11["HOXA2",]), decreasing = T), 3) ])
+RARB_targets <- colnames(d11["RARB", head(order(as.numeric(d11["RARB",]), decreasing = T), 3) ])
+RFX4_targets <- colnames(d11["RFX4", head(order(as.numeric(d11["RFX4",]), decreasing = T), 3) ])
+ALX4_targets <- colnames(d11["ALX4", head(order(as.numeric(d11["ALX4",]), decreasing = T), 3) ])
+NR2F1_targets <- colnames(d11["NR2F1", head(order(as.numeric(d11["NR2F1",]), decreasing = T), 3) ])
+
+targets <- unique(c(HOXA2_targets,
+                    RARB_targets,
+                    RFX4_targets,
+                    ALX4_targets,
+                    NR2F1_targets,
+                    "HOXA2", "RARB", "RFX4", "ALX4", "NR2F1"))
+
+
+sources <- unique(c(example_network_nodes, intersect(targets, rownames(d11))))
+length(sources)
+d11_subnetwork <- d11[sources,targets]
+
+d11_subnetwork$TF <- rownames(d11_subnetwork)
+
+d11_subnetwork <- melt(d11_subnetwork,id.vars = "TF")
+
+d11_subnetwork <- d11_subnetwork %>% filter(value > 30)
+
+#d11_subnetwork$value <- log2(d11_subnetwork$value)
+
+d11_subnetwork %>%
+  write.csv(file = "d11_subnetwork_for_plot.csv", quote = F)
+```
+
+
+```{r}
+example_network_nodes <- c("SOX9", "TFAP2A", "SNAI2", "ALX3", "TWIST1")
+
+SOX9_targets <- colnames(p2["SOX9", head(order(as.numeric(p2["SOX9",]), decreasing = T), 3) ])
+TFAP2A_targets <- colnames(p2["TFAP2A", head(order(as.numeric(p2["TFAP2A",]), decreasing = T), 3) ])
+SNAI2_targets <- colnames(p2["SNAI2", head(order(as.numeric(p2["SNAI2",]), decreasing = T), 3) ])
+ALX3_targets <- colnames(p2["ALX3", head(order(as.numeric(p2["ALX3",]), decreasing = T), 3) ])
+TWIST1_targets <- colnames(p2["TWIST1", head(order(as.numeric(p2["TWIST1",]), decreasing = T), 3) ])
+
+targets <- unique(c(SOX9_targets,
+                    TFAP2A_targets,
+                    SNAI2_targets,
+                    ALX3_targets,
+                    TWIST1_targets,
+                    "SOX9", "TFAP2A", "SNAI2", "ALX3", "TWIST1"))
+
+sources <- unique(c(example_network_nodes, intersect(targets, rownames(p2))))
+length(sources)
+p2_subnetwork <- p2[sources,targets]
+
+p2_subnetwork$TF <- rownames(p2_subnetwork)
+
+p2_subnetwork <- melt(p2_subnetwork,id.vars = "TF") 
+p2_subnetwork <- p2_subnetwork %>% filter(value > 30)
+
+#p2_subnetwork$value <- log2(p2_subnetwork$value)
+
+p2_subnetwork %>%
+  write.csv(file = "p2_subnetwork_for_plot.csv", quote = F)
+
+```
+

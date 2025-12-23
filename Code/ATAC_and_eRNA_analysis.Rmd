@@ -1,0 +1,1115 @@
+---
+title: "ATAC_and_eRNA_analysis"
+author: "Michael Eibl"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+#libraries
+library("GenomicRanges")
+library("InteractionSet")
+library("csaw")
+library("ggplot2")
+library("ggpubr")
+library("ggthemes")
+library("ggforce")
+library("patchwork")
+library("dplyr")
+library("tidyverse")
+library("magrittr")
+library("org.Hs.eg.db")
+library("TxDb.Hsapiens.UCSC.hg38.knownGene")
+library("BSgenome.Hsapiens.UCSC.hg38")
+library("Gviz")
+library("stringr")
+library("DESeq2")
+library("ComplexHeatmap")
+library("viridis")
+library("clusterProfiler")
+library("msigdbr")
+library("Mfuzz")
+library("reshape2")
+library("ChIPseeker")
+library("BiocParallel")
+library("rGREAT")
+library("marge")
+```
+
+```{r}
+#load relevant reference datasets for the analysis
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+bsg <- BSgenome.Hsapiens.UCSC.hg38
+odb <- org.Hs.eg.db
+```
+
+```{r}
+# starting from MACS2 filtered narrowPeaks
+
+# read replicate broadPeak files
+d5_r1.peaks <- read.table("./ATAC_d5_rep1.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d5_r2.peaks <- read.table("./ATAC_d5_rep2.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d5_r3.peaks <- read.table("./ATAC_d5_rep3.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+
+d8_r1.peaks <- read.table("./ATAC_d8_rep1.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d8_r2.peaks <- read.table("./ATAC_d8_rep2.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d8_r3.peaks <- read.table("./ATAC_d8_rep3.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+
+d11_r1.peaks <- read.table("./ATAC_d11_rep1.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d11_r2.peaks <- read.table("./ATAC_d11_rep2.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+d11_r3.peaks <- read.table("./ATAC_d11_rep3.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+
+p2_r1.peaks <- read.table("./ATAC_p2_rep1.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+p2_r2.peaks <- read.table("./ATAC_p2_rep2.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+p2_r3.peaks <- read.table("./ATAC_p2_rep3.merged.nodup.tn5.pval0.01.300K.bfilt.narrowPeak", sep="\t")[,1:3]
+
+colnames(d5_r1.peaks) <- c("chrom", "start", "end")
+colnames(d5_r2.peaks) <- c("chrom", "start", "end")
+colnames(d5_r3.peaks) <- c("chrom", "start", "end")
+colnames(d8_r1.peaks) <- c("chrom", "start", "end")
+colnames(d8_r2.peaks) <- c("chrom", "start", "end")
+colnames(d8_r3.peaks) <- c("chrom", "start", "end")
+colnames(d11_r1.peaks) <- c("chrom", "start", "end")
+colnames(d11_r2.peaks) <- c("chrom", "start", "end")
+colnames(d11_r3.peaks) <- c("chrom", "start", "end")
+colnames(p2_r1.peaks) <- c("chrom", "start", "end")
+colnames(p2_r2.peaks) <- c("chrom", "start", "end")
+colnames(p2_r3.peaks) <- c("chrom", "start", "end")
+
+# convert to GRanges objects
+d5_r1.peaks <- GRanges(d5_r1.peaks)
+d5_r2.peaks <- GRanges(d5_r2.peaks)
+d5_r3.peaks <- GRanges(d5_r3.peaks)
+
+d8_r1.peaks <- GRanges(d8_r1.peaks)
+d8_r2.peaks <- GRanges(d8_r2.peaks)
+d8_r3.peaks <- GRanges(d8_r3.peaks)
+
+d11_r1.peaks <- GRanges(d11_r1.peaks)
+d11_r2.peaks <- GRanges(d11_r2.peaks)
+d11_r3.peaks <- GRanges(d11_r3.peaks)
+
+p2_r1.peaks <- GRanges(p2_r1.peaks)
+p2_r2.peaks <- GRanges(p2_r2.peaks)
+p2_r3.peaks <- GRanges(p2_r3.peaks)
+```
+
+We can now define a consensus peakset.
+
+```{r}
+# one method: union of all replicate peak sets for both timepoints
+d5.peaks <- GenomicRanges::union(GenomicRanges::union(d5_r1.peaks, d5_r2.peaks, ignore.strand=TRUE), d5_r3.peaks, ignore.strand=TRUE)
+d8.peaks <- GenomicRanges::union(GenomicRanges::union(d8_r1.peaks, d8_r2.peaks, ignore.strand=TRUE), d8_r3.peaks, ignore.strand=FALSE)
+d11.peaks <- GenomicRanges::union(GenomicRanges::union(d11_r1.peaks, d11_r2.peaks, ignore.strand=TRUE), d11_r3.peaks, ignore.strand=FALSE)
+p2.peaks <-  GenomicRanges::union(GenomicRanges::union(p2_r1.peaks, p2_r2.peaks, ignore.strand=TRUE), p2_r3.peaks, ignore.strand=FALSE)
+all.peaks <- GenomicRanges::union(GenomicRanges::union(GenomicRanges::union(d5.peaks, d8.peaks, ignore.strand=TRUE),
+                                                       d11.peaks, ignore.strand=TRUE), p2.peaks, ignore.strand=TRUE)
+
+
+all.peaks
+```
+
+We now want to count the reads from bam files mapping to these regions
+
+```{r}
+# specify paired-end BAMs
+se.bams <- c("./ATAC_d5_rep1.merged.nodup.bam",
+             "./ATAC_d5_rep2.merged.nodup.bam",
+             "./ATAC_d5_rep3.merged.nodup.bam",
+             
+             "./ATAC_d8_rep1.merged.nodup.bam",
+             "./ATAC_d8_rep2.merged.nodup.bam",
+             "./ATAC_d8_rep3.merged.nodup.bam",
+             
+             "./ATAC_d11_rep1.merged.nodup.bam",
+             "./ATAC_d11_rep2.merged.nodup.bam",
+             "./ATAC_d11_rep3.merged.nodup.bam",
+             
+             "./ATAC_p2_rep1.merged.nodup.bam",
+             "./ATAC_p2_rep2.merged.nodup.bam",
+             "./ATAC_p2_rep3.merged.nodup.bam")
+
+##############################
+# read hg38 blacklist
+blacklist <- read.table("./hg38-blacklist.v2.bed", sep="\t")
+colnames(blacklist) <- c("chrom", "start", "end")
+blacklist <- GRanges(blacklist)
+
+# define read parameters
+param <- readParam(max.frag=1000, pe="none")
+
+##############################
+# count reads in windows specified by MACS2                                      
+all.peak.counts <- regionCounts(se.bams, all.peaks, param=param, BPPARAM=SerialParam())
+```
+
+```{r}
+all.peak.counts@colData[,"timepoint"] <- c(rep("d5", 3),
+                                           rep("d8", 3),
+                                           rep("d11", 3),
+                                           rep("p2", 3))
+
+all.peak.counts@colData[,"replicate"] <- rep(c("rep1", "rep2", "rep3"), 4)
+
+quantile(rowSums(all.peak.counts@assays@data$counts))
+
+quantile(apply(all.peak.counts@assays@data$counts, 1, max))
+```
+
+ATAC-seq QC (Supplementary Figure 3)
+
+```{r}
+peaks_l <- list()
+peaks_l$d5 <- import(con = "./ATAC_D5/data/peak/pooled-rep/ATAC_d5_rep1.merged.nodup.tn5.pooled.pval0.01.300K.bfilt.narrowPeak")
+peaks_l$d8 <- import(con = "./ATAC_D8/peak/pooled-rep/ATAC_d8_rep1.merged.nodup.tn5.pooled.pval0.01.300K.bfilt.narrowPeak")
+peaks_l$d11 <- import(con = "./ATAC_D11/peak/pooled-rep/ATAC_d11_rep1.merged.nodup.tn5.pooled.pval0.01.300K.bfilt.narrowPeak")
+peaks_l$p2 <- import(con = "./ATAC_P2/peak/pooled-rep/ATAC_p2_rep1.merged.nodup.tn5.pooled.pval0.01.300K.bfilt.narrowPeak")
+
+
+peaksAnno_l <- lapply(peaks_l, annotatePeak, TxDb = txdb)
+plotAnnoBar(peaksAnno_l)
+```
+
+```{r}
+plotDistToTSS(peaksAnno_l, title = "Distribution of ATAC-seq peaks relative to TSS") + xlab("ATAC peaks (%) (5'->3')")
+```
+
+```{r}
+lapply(peaks_l, length)
+
+data.frame(day = names(peaks_l),
+           peak_nr = unlist(lapply(peaks_l, length))) %>%
+  ggplot(., aes(x=day, y=peak_nr)) +
+  geom_bar(stat = "identity") +
+  ylab("# of peaks") +
+  theme(text = element_text(size = 16))
+```
+
+
+```{r}
+# Create DESeq2 object with blank design    
+dds_blind <- DESeqDataSet(all.peak.counts, design = ~ 1)
+
+# Normalize and log transform               
+vst_blind <- varianceStabilizingTransformation(dds_blind, blind = TRUE)
+
+vst_blind$timepoint <- factor(vst_blind$timepoint, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_ATAC <- plotPCA(vst_blind, "timepoint") +
+  theme_pubr() +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+```
+
+Identify regions with variable accessibility throughout the time course.
+
+```{r}
+all.peak.counts_filt <- all.peak.counts[which(apply(all.peak.counts@assays@data$counts, 1, max) > 10),]
+
+all.peak.counts_filt$timepoint <- dds_genes$stage
+dds_ATAC <- DESeqDataSet(all.peak.counts_filt, design = ~ timepoint)
+vst_ATAC <- varianceStabilizingTransformation(dds_ATAC, blind = F)
+vst_ATAC$timepoint <- factor(vst_ATAC$timepoint, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_ATAC <- plotPCA(vst_ATAC, "timepoint") +
+  theme_pubr() +
+  ggtitle("chromatin accessibility") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+
+dds_ATAC <- DESeq(dds_ATAC)
+
+cm_ATAC <- counts(dds_ATAC, normalized=T)
+
+tc_normcounts_ATAC <- data.frame(d5 = as.numeric(rowMeans(cm_ATAC[,1:3])),
+                          d8 = as.numeric(rowMeans(cm_ATAC[,4:6])),
+                          d11 = as.numeric(rowMeans(cm_ATAC[,7:9])),
+                          p2 = as.numeric(rowMeans(cm_ATAC[,10:12])))
+
+rownames(tc_normcounts_ATAC) <- paste0(
+    as.character(x = seqnames(x = all.peak.counts[which(apply(all.peak.counts@assays@data$counts, 1, max) > 10),])),
+    ":",
+    start(x = all.peak.counts[which(apply(all.peak.counts@assays@data$counts, 1, max) > 10),]),
+    "-",
+    end(x = all.peak.counts[which(apply(all.peak.counts@assays@data$counts, 1, max) > 10),])
+  )
+
+res_d5_d8 <- results(dds_ATAC, contrast =  c("timepoint", "d5", "d8"))
+res_d5_d11 <- results(dds_ATAC, contrast =  c("timepoint", "d5", "d11"))
+res_d5_p2 <- results(dds_ATAC, contrast =  c("timepoint", "d5", "p2"))
+res_d8_d11 <- results(dds_ATAC, contrast =  c("timepoint", "d8", "d11"))
+res_d8_p2 <- results(dds_ATAC, contrast =  c("timepoint", "d8", "p2"))
+res_d11_p2 <- results(dds_ATAC, contrast =  c("timepoint", "d11", "p2"))
+
+maxFC_ATAC <- cbind(
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d5_d11$log2FoldChange, res_d5_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d8_d11$log2FoldChange, res_d8_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d11$log2FoldChange, res_d8_d11$log2FoldChange, res_d11_p2$log2FoldChange))), MARGIN = 1, FUN = max)
+)
+
+rownames(maxFC_ATAC) <- rownames(tc_normcounts_ATAC)
+
+ATAC_log2FC_1 <- maxFC_ATAC  %>%
+  as.data.frame() %>%
+  filter_all(any_vars(. > 1)) %>%
+  rownames()
+
+tc_normcounts_ATAC_variable <- tc_normcounts_ATAC[ATAC_log2FC_1,]
+```
+
+Fuzzy c-means clustering of region of accessible chromatin with similar time-course accessibility dynamics
+
+```{r}
+set.seed(12)
+es <- ExpressionSet(assayData=as.matrix(tc_normcounts_ATAC_variable))
+es.stand <- standardise(es)
+
+cl <- mfuzz(es.stand,c=9,m=1.5)
+
+df_tc_normcounts_ATAC <- as.data.frame(cl$cluster)
+colnames(df_tc_normcounts_ATAC) <- "Cluster"
+df_tc_normcounts_ATAC$region <- rownames(tc_normcounts_ATAC_variable)
+df_tc_normcounts_ATAC$membership = NA
+
+for (i in 1:nrow(df_tc_normcounts_ATAC)) {
+  df_tc_normcounts_ATAC$membership[i] <- max(cl$membership[i,])
+}
+
+df_tc_normcounts_ATAC <- cbind(
+  df_tc_normcounts_ATAC,
+  es.stand@assayData$exprs
+)
+
+df_tc_normcounts_ATAC_melt <- melt(df_tc_normcounts_ATAC, id.vars = c("region", "Cluster", "membership"))
+colnames(df_tc_normcounts_ATAC_melt)[c(4,5)] <- c("timepoint", "z")
+
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 1), "Cluster"] <- "cluster[ATAC]~1"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 2), "Cluster"] <- "cluster[ATAC]~2"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 3), "Cluster"] <- "cluster[ATAC]~3"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 4), "Cluster"] <- "cluster[ATAC]~4"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 5), "Cluster"] <- "cluster[ATAC]~5"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 6), "Cluster"] <- "cluster[ATAC]~6"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 7), "Cluster"] <- "cluster[ATAC]~7"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 8), "Cluster"] <- "cluster[ATAC]~8"
+df_tc_normcounts_ATAC_melt[which(df_tc_normcounts_ATAC_melt$Cluster == 9), "Cluster"] <- "cluster[ATAC]~9"
+
+df_tc_normcounts_ATAC_melt$Cluster <- factor(df_tc_normcounts_ATAC_melt$Cluster,
+                                       levels = c("cluster[ATAC]~1",
+                                                  "cluster[ATAC]~2",
+                                                  "cluster[ATAC]~3",
+                                                  "cluster[ATAC]~4",
+                                                  "cluster[ATAC]~5",
+                                                  "cluster[ATAC]~6",
+                                                  "cluster[ATAC]~7",
+                                                  "cluster[ATAC]~8",
+                                                  "cluster[ATAC]~9"))
+
+ggplot(df_tc_normcounts_ATAC_melt, aes(x=timepoint, y=z, group=region, col=membership)) +
+  geom_line(alpha=0.2) +
+  facet_wrap(~Cluster, labeller = label_parsed, nrow = 3, ncol = 3) +
+  theme_minimal() +
+  xlab("time point") +
+  ylab("z-score") +
+  theme(strip.background=element_rect(colour="black",
+                                    fill="white"),
+        text = element_text(size = 15),
+        legend.position = "right"
+  )
+```
+
+
+GREAT enrichment analysis.
+
+```{r}
+ranges.df <- data.frame(ranges = df_tc_normcounts_ATAC$region)
+ranges.df <- separate(
+    data = ranges.df,
+    col = "ranges",
+    sep = paste0(":", "|", "-"),
+    into = c("chr", "start", "end")
+)
+gr_tc_normcounts_ATAC <- makeGRangesFromDataFrame(df = ranges.df)
+gr_tc_normcounts_ATAC$Cluster <- df_tc_normcounts_ATAC$Cluster
+
+genome(gr_tc_normcounts_ATAC) <- "hg38"
+
+res_1 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "1"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_1 = getEnrichmentTable(res_1)
+tb_1[
+  with(tb_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_2 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "2"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_2 = getEnrichmentTable(res_2)
+tb_2[
+  with(tb_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_3 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "3"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_3 = getEnrichmentTable(res_3)
+tb_3[
+  with(tb_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_4 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "4"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_4 = getEnrichmentTable(res_4)
+tb_4[
+  with(tb_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_5 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "5"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_5 = getEnrichmentTable(res_5)
+tb_5[
+  with(tb_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_6 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "6"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_6 = getEnrichmentTable(res_6)
+tb_6[order(tb_6$p_adjust_hyper),]
+tb_6[
+  with(tb_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_7 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "7"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_7 = getEnrichmentTable(res_7)
+tb_7[order(tb_7$p_adjust_hyper),]
+tb_7[
+  with(tb_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_8 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "8"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_8 = getEnrichmentTable(res_8)
+tb_8[order(tb_8$p_adjust_hyper),]
+tb_8[
+  with(tb_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_9 = great(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == "9"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_9 = getEnrichmentTable(res_9)
+tb_9[order(tb_9$p_adjust_hyper),]
+tb_9[
+  with(tb_9, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+df_enrich_ATAC <-
+  Reduce(rbind, list(
+    tb_1[
+    with(tb_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_2[
+    with(tb_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_3[
+    with(tb_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_4[
+    with(tb_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_5[
+    with(tb_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+  
+    tb_6[
+    with(tb_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_7[
+    with(tb_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_8[
+    with(tb_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,],
+    
+    tb_9[
+    with(tb_9, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:6,]
+    )
+)
+
+top_hits_ATAC_GREAT <- unique(df_enrich_ATAC$description)
+
+df_enrich_ATAC <-
+  Reduce(rbind, list(
+    cbind(tb_1[
+    with(tb_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster = 1),
+    
+    cbind(tb_2[
+    with(tb_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =2),
+    
+    cbind(tb_3[
+    with(tb_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =3),
+    
+    cbind(tb_4[
+    with(tb_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =4),
+    
+    cbind(tb_5[
+    with(tb_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =5),
+    
+    cbind(tb_6[
+    with(tb_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =6),
+    
+    cbind(tb_7[
+    with(tb_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =7),
+    
+    cbind(tb_8[
+    with(tb_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =8),
+    
+    cbind(tb_9[
+    with(tb_9, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =9)
+    )
+)
+
+df_enrich_ATAC_group <- df_enrich_ATAC %>%
+    group_by(Cluster, description) %>%
+    summarise(p_adjust = max(p_adjust), fold_enrichment = max(fold_enrichment)) %>%
+    ungroup()
+
+df_enrich_ATAC_top <- df_enrich_ATAC_group %>%
+  filter(description %in% top_hits_ATAC_GREAT)
+
+df_enrich_ATAC_top <- df_enrich_ATAC_top[which(df_enrich_ATAC_top$p_adjust < 1e-5),]
+# 
+# df_enrich_ATAC_top <- df_enrich_ATAC_top[which(df_enrich_ATAC_top$fold_enrichment > 1.1),]
+
+df_enrich_ATAC_top$description <- factor(df_enrich_ATAC_top$description,
+                                         levels = rev(unique(df_enrich_ATAC_top$description)))
+
+df_enrich_ATAC_top$p_adjust[which(df_enrich_ATAC_top$p_adjust == 0)] <- min(df_enrich_ATAC_top$p_adjust[which(df_enrich_ATAC_top$p_adjust != 0)])
+
+ggplot(df_enrich_ATAC_top, aes(x = description, y = Cluster, size=fold_enrichment, col = -log10(p_adjust))) +
+  geom_point(stat = 'identity') +
+  xlab("") +
+  coord_flip() +
+  scale_y_continuous(breaks = 1:9) +
+  scale_color_gradientn(colours=c("#7e62a3", "#46bac2", "#f7ca64")) +
+  theme_minimal() +
+  theme(text = element_text(size=15),
+        axis.ticks = element_line(size = 0.2),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5))
+```
+
+```{r}
+#prepare ATAC-seq clusters for HOMER analysis
+ 
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 1),], con = "ATAC_mfuzz_c9_cl1.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 2),], con = "ATAC_mfuzz_c9_cl2.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 3),], con = "ATAC_mfuzz_c9_cl3.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 4),], con = "ATAC_mfuzz_c9_cl4.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 5),], con = "ATAC_mfuzz_c9_cl5.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 6),], con = "ATAC_mfuzz_c9_cl6.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 7),], con = "ATAC_mfuzz_c9_cl7.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 8),], con = "ATAC_mfuzz_c9_cl8.bed")
+
+export.bed(gr_tc_normcounts_ATAC[which(gr_tc_normcounts_ATAC$Cluster == 9),], con = "ATAC_mfuzz_c9_cl9.bed")
+```
+
+External HOMER TF enrichment analysis
+
+```{r}
+known_ATAC_cl1 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl1", homer_dir = TRUE)
+known_ATAC_cl2 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl2", homer_dir = TRUE)
+known_ATAC_cl3 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl3", homer_dir = TRUE)
+known_ATAC_cl4 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl4", homer_dir = TRUE)
+known_ATAC_cl5 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl5", homer_dir = TRUE)
+known_ATAC_cl6 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl6", homer_dir = TRUE)
+known_ATAC_cl7 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl7", homer_dir = TRUE)
+known_ATAC_cl8 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl8", homer_dir = TRUE)
+known_ATAC_cl9 <- read_known_results(path = "./HOMER/ATAC_mfuzz_out/cl9", homer_dir = TRUE)
+top_ATAC_cl1 <-
+  known_ATAC_cl1[sort(known_ATAC_cl1$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl2 <-
+  known_ATAC_cl2[sort(known_ATAC_cl2$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl3 <-
+  known_ATAC_cl3[sort(known_ATAC_cl3$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl4 <-
+  known_ATAC_cl4[sort(known_ATAC_cl4$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl5 <-
+  known_ATAC_cl5[sort(known_ATAC_cl5$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl6 <-
+  known_ATAC_cl6[sort(known_ATAC_cl6$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl7 <-
+  known_ATAC_cl7[sort(known_ATAC_cl7$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl8 <-
+  known_ATAC_cl8[sort(known_ATAC_cl8$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_ATAC_cl9 <-
+  known_ATAC_cl9[sort(known_ATAC_cl9$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_motifs_ATAC <- c(top_ATAC_cl1,
+                     top_ATAC_cl2,
+                     top_ATAC_cl3,
+                     top_ATAC_cl4,
+                     top_ATAC_cl5,
+                     top_ATAC_cl6,
+                     top_ATAC_cl7,
+                     top_ATAC_cl8,
+                     top_ATAC_cl9) %>% unlist()
+
+known_ATAC <- Reduce(
+  rbind,
+  list(cbind(known_ATAC_cl1, cluster = 1),
+       cbind(known_ATAC_cl2, cluster = 2),
+       cbind(known_ATAC_cl3, cluster = 3),
+       cbind(known_ATAC_cl4, cluster = 4),
+       cbind(known_ATAC_cl5, cluster = 5),
+       cbind(known_ATAC_cl6, cluster = 6),
+       cbind(known_ATAC_cl7, cluster = 7),
+       cbind(known_ATAC_cl8, cluster = 8),
+       cbind(known_ATAC_cl9, cluster = 9)
+  )
+)
+
+known_ATAC <- known_ATAC %>%
+    group_by(cluster, motif_name) %>%
+    summarise(top_log_p_value = max(log_p_value)) %>%
+    ungroup()
+
+known_ATAC_top <- known_ATAC %>%
+  filter(motif_name %in% top_motifs_ATAC)
+
+known_ATAC_top %>%
+    ggplot(aes(x = cluster, y = motif_name, fill = top_log_p_value)) +
+    geom_tile() +
+  xlab(expression(cluster[ATAC])) +
+  ylab("motif name") +
+  labs(fill='-log10(p-value)') +
+  scale_x_continuous(breaks = 1:9) +
+  theme_pubr() +
+  scale_fill_viridis() +
+  theme(text = element_text(size = 15),
+        legend.position = "top")
+
+```
+
+
+
+##Overlap enhancers with ATAC-seq peaks
+
+```{r}
+Enhancer
+
+Enhancers_ATAC_overlap <- Enhancer %>%                                       
+    subsetByOverlaps(all.peaks)
+```
+
+```{r}
+#PCA for Enhancers only
+dds_Enhancers_ATAC_overlap <- DESeqDataSet(Enhancers_ATAC_overlap, design = ~ stage)
+dds_Enhancers_ATAC_overlap$stage <- factor(dds_Enhancers_ATAC_overlap$stage, levels = c("d5", "d8", "d11", "p2"))
+vst_Enhancers_ATAC_overlap <- varianceStabilizingTransformation(dds_Enhancers_ATAC_overlap, blind = FALSE)
+vst_Enhancers_ATAC_overlap$stage <- factor(vst_Enhancers_ATAC_overlap$stage, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_enh <- plotPCA(vst_Enhancers_ATAC_overlap, "stage") +
+  theme_pubr() +
+  ggtitle("Enhancers: eRNAs overlapping ATAC peaks") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+
+PCA_enh
+
+dds_Enhancers_ATAC_overlap <- DESeq(dds_Enhancers_ATAC_overlap)
+```
+
+
+```{r}
+dds_Enhancers_ATAC_overlap <- estimateSizeFactors(dds_Enhancers_ATAC_overlap)
+norm_eRNA_counts <- counts(dds_Enhancers_ATAC_overlap, normalized=T)
+
+tc_normcounts_eRNA <- data.frame(d5 = as.numeric(rowMeans(norm_eRNA_counts[,1:3])),
+                          d8 = as.numeric(rowMeans(norm_eRNA_counts[,4:6])),
+                          d11 = as.numeric(rowMeans(norm_eRNA_counts[,7:9])),
+                          p2 = as.numeric(rowMeans(norm_eRNA_counts[,10:12])))
+
+rownames(tc_normcounts_eRNA) <- rownames(dds_Enhancers_ATAC_overlap@assays@data$counts)
+
+res_d5_d8 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d8", "d5"))
+res_d5_d11 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d11", "d5"))
+res_d5_p2 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d5", "p2"))
+res_d8_d11 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d8", "d11"))
+res_d8_p2 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d8", "p2"))
+res_d11_p2 <- results(dds_Enhancers_ATAC_overlap, contrast =  c("stage", "d11", "p2"))
+
+maxFC_eRNAs <- cbind(
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d5_d11$log2FoldChange, res_d5_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d8_d11$log2FoldChange, res_d8_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d11$log2FoldChange, res_d8_d11$log2FoldChange, res_d11_p2$log2FoldChange))), MARGIN = 1, FUN = max)
+)
+
+rownames(maxFC_eRNAs) <- rownames(dds_Enhancers_ATAC_overlap@assays@data$counts)
+
+eRNAs_log2FC_1 <- maxFC_eRNAs  %>%
+  as.data.frame() %>%
+  filter_all(any_vars(. > 1)) %>%
+  rownames()
+
+tc_normcounts_eRNA_variable <- tc_normcounts_eRNA[eRNAs_log2FC_1,]
+print(length(eRNAs_log2FC_1))
+```
+
+```{r}
+set.seed(12)
+es <- ExpressionSet(assayData=as.matrix(tc_normcounts_eRNA_variable))
+es.stand <- standardise(es)
+
+cl <- mfuzz(es.stand,c=8,m=1.5)
+
+df_tc_normcounts_eRNA_variable <- as.data.frame(cl$cluster)
+colnames(df_tc_normcounts_eRNA_variable) <- "Cluster"
+df_tc_normcounts_eRNA_variable$region <- rownames(df_tc_normcounts_eRNA_variable)
+df_tc_normcounts_eRNA_variable$membership = NA
+
+for (i in 1:nrow(df_tc_normcounts_eRNA_variable)) {
+  df_tc_normcounts_eRNA_variable$membership[i] <- max(cl$membership[i,])
+}
+
+df_tc_normcounts_eRNA_variable <- cbind(
+  df_tc_normcounts_eRNA_variable,
+  es.stand@assayData$exprs
+)
+
+df_tc_normcounts_eRNA_variable_melt <- melt(df_tc_normcounts_eRNA_variable, id.vars = c("region", "Cluster", "membership"))
+colnames(df_tc_normcounts_eRNA_variable_melt)[c(4,5)] <- c("timepoint", "z")
+
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 1), "Cluster"] <- "cluster[eRNA]~1"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 2), "Cluster"] <- "cluster[eRNA]~2"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 3), "Cluster"] <- "cluster[eRNA]~3"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 4), "Cluster"] <- "cluster[eRNA]~4"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 5), "Cluster"] <- "cluster[eRNA]~5"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 6), "Cluster"] <- "cluster[eRNA]~6"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 7), "Cluster"] <- "cluster[eRNA]~7"
+df_tc_normcounts_eRNA_variable_melt[which(df_tc_normcounts_eRNA_variable_melt$Cluster == 8), "Cluster"] <- "cluster[eRNA]~8"
+
+df_tc_normcounts_eRNA_variable_melt$Cluster <- factor(df_tc_normcounts_eRNA_variable_melt$Cluster,
+                                       levels = c("cluster[eRNA]~1",
+                                                  "cluster[eRNA]~2",
+                                                  "cluster[eRNA]~3",
+                                                  "cluster[eRNA]~4",
+                                                  "cluster[eRNA]~5",
+                                                  "cluster[eRNA]~6",
+                                                  "cluster[eRNA]~7",
+                                                  "cluster[eRNA]~8"#,
+                                                  # "cluster[eRNA]~9")
+                                                  ))
+
+ggplot(df_tc_normcounts_eRNA_variable_melt, aes(x=timepoint, y=z, group=region, col=membership)) +
+  geom_line(alpha=0.2) +
+  facet_wrap(~Cluster, labeller = label_parsed, nrow = 2, ncol =4) +
+  theme_minimal() +
+  xlab("time point") +
+  ylab("z-score") +
+  theme(strip.background=element_rect(colour="black",
+                                    fill="white"),
+        text = element_text(size = 15),
+        legend.position="right"
+  )
+```
+
+```{r}
+df_tc_normcounts_eRNA_variable_top <- df_tc_normcounts_eRNA_variable %>%
+  group_by(Cluster) %>%
+  filter(membership > quantile(membership)["25%"]) %>%
+  ungroup()
+
+ranges.df <- data.frame(ranges = df_tc_normcounts_eRNA_variable_top$region)
+ranges.df <- separate(
+    data = ranges.df,
+    col = "ranges",
+    sep = paste0(":", "|", "-"),
+    into = c("chr", "start", "end")
+)
+gr_tc_eRNA <- makeGRangesFromDataFrame(df = ranges.df)
+gr_tc_eRNA$Cluster <- df_tc_normcounts_eRNA_variable_top$Cluster
+
+
+genome(gr_tc_eRNA) <- "hg38"
+
+res_eRNA_1 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "1"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_1 = getEnrichmentTable(res_eRNA_1)
+tb_eRNA_1[
+  with(tb_eRNA_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_2 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "2"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_2 = getEnrichmentTable(res_eRNA_2)
+tb_eRNA_2[
+  with(tb_eRNA_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_3 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "3"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_3 = getEnrichmentTable(res_eRNA_3)
+tb_eRNA_3[
+  with(tb_eRNA_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_4 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "4"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_4 = getEnrichmentTable(res_eRNA_4)
+tb_eRNA_4[
+  with(tb_eRNA_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_5 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "5"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_5 = getEnrichmentTable(res_eRNA_5)
+tb_eRNA_5[
+  with(tb_eRNA_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_6 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "6"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_6 = getEnrichmentTable(res_eRNA_6)
+tb_eRNA_6[order(tb_eRNA_6$p_adjust_hyper),]
+tb_eRNA_6[
+  with(tb_eRNA_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_7 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "7"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_7 = getEnrichmentTable(res_eRNA_7)
+tb_eRNA_7[order(tb_eRNA_7$p_adjust_hyper),]
+tb_eRNA_7[
+  with(tb_eRNA_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+res_eRNA_8 = great(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == "8"),], "GO:BP", "TxDb.Hsapiens.UCSC.hg38.knownGene")
+tb_eRNA_8 = getEnrichmentTable(res_eRNA_8)
+tb_eRNA_8[order(tb_eRNA_8$p_adjust_hyper),]
+tb_eRNA_8[
+  with(tb_eRNA_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+]
+
+df_enrich_eRNA <-
+  Reduce(rbind, list(
+    tb_eRNA_1[
+    with(tb_eRNA_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_2[
+    with(tb_eRNA_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_3[
+    with(tb_eRNA_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_4[
+    with(tb_eRNA_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_5[
+    with(tb_eRNA_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_6[
+    with(tb_eRNA_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+    
+    tb_eRNA_7[
+    with(tb_eRNA_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,],
+
+tb_eRNA_8[
+    with(tb_eRNA_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ][1:7,]
+)
+)
+
+top_hits_eRNA_GREAT <- unique(df_enrich_eRNA$description)
+length(top_hits_eRNA_GREAT)
+
+df_enrich_eRNA <-
+  Reduce(rbind, list(
+    cbind(tb_eRNA_1[
+    with(tb_eRNA_1, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster = 1),
+    
+    cbind(tb_eRNA_2[
+    with(tb_eRNA_2, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =2),
+    
+    cbind(tb_eRNA_3[
+    with(tb_eRNA_3, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =3),
+    
+    cbind(tb_eRNA_4[
+    with(tb_eRNA_4, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =4),
+    
+    cbind(tb_eRNA_5[
+    with(tb_eRNA_5, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =5),
+    
+    cbind(tb_eRNA_6[
+    with(tb_eRNA_6, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =6),
+    
+    cbind(tb_eRNA_7[
+    with(tb_eRNA_7, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =7),
+    
+    cbind(tb_eRNA_8[
+    with(tb_eRNA_8, order(p_adjust_hyper, -fold_enrichment_hyper)),
+    ], Cluster =8)
+    )
+)
+
+df_enrich_eRNA_group <- df_enrich_eRNA %>%
+    group_by(Cluster, description) %>%
+    summarise(p_adjust = max(p_adjust), fold_enrichment = max(fold_enrichment)) %>%
+    ungroup()
+
+df_enrich_eRNA_top <- df_enrich_eRNA_group %>%
+  filter(description %in% top_hits_eRNA_GREAT)
+
+df_enrich_eRNA_top <- df_enrich_eRNA_top[which(df_enrich_eRNA_top$p_adjust < 0.0005),]
+
+df_enrich_eRNA_top$description <- factor(df_enrich_eRNA_top$description,
+                                         levels = rev(unique(df_enrich_eRNA_top$description)))
+
+df_enrich_eRNA_top$p_adjust[which(df_enrich_eRNA_top$p_adjust == 0)] <- min(df_enrich_eRNA_top$p_adjust[which(df_enrich_eRNA_top$p_adjust != 0)])
+
+ggplot(df_enrich_eRNA_top, aes(x = description, y = Cluster, size=fold_enrichment, col = -log10(p_adjust))) +
+  geom_point(stat = 'identity') +
+  xlab("") +
+  coord_flip() +
+  scale_y_continuous(breaks = 1:8) +
+  scale_color_gradientn(colours=c("#7e62a3", "#46bac2", "#f7ca64")) +
+  theme_minimal() +
+  theme(text = element_text(size=15),
+        axis.ticks = element_line(size = 0.2),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.5))
+```
+
+
+
+
+```{r}
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 1),], con = "eRNA_mfuzz_c8_cl1.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 2),], con = "eRNA_mfuzz_c8_cl2.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 3),], con = "eRNA_mfuzz_c8_cl3.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 4),], con = "eRNA_mfuzz_c8_cl4.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 5),], con = "eRNA_mfuzz_c8_cl5.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 6),], con = "eRNA_mfuzz_c8_cl6.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 7),], con = "eRNA_mfuzz_c8_cl7.bed")
+
+export.bed(gr_tc_eRNA[which(gr_tc_eRNA$Cluster == 8),], con = "eRNA_mfuzz_c8_cl8.bed")
+```
+
+```{r}
+known_eRNA_cl1 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl1", homer_dir = TRUE)
+known_eRNA_cl2 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl2", homer_dir = TRUE)
+known_eRNA_cl3 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl3", homer_dir = TRUE)
+known_eRNA_cl4 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl4", homer_dir = TRUE)
+known_eRNA_cl5 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl5", homer_dir = TRUE)
+known_eRNA_cl6 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl6", homer_dir = TRUE)
+known_eRNA_cl7 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl7", homer_dir = TRUE)
+known_eRNA_cl8 <- read_known_results(path = "./HOMER/eRNA_mfuzz_out/cl8", homer_dir = TRUE)
+
+top_eRNA_cl1 <-
+  known_eRNA_cl1[sort(known_eRNA_cl1$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl2 <-
+  known_eRNA_cl2[sort(known_eRNA_cl2$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl3 <-
+  known_eRNA_cl3[sort(known_eRNA_cl3$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl4 <-
+  known_eRNA_cl4[sort(known_eRNA_cl4$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl5 <-
+  known_eRNA_cl5[sort(known_eRNA_cl5$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl6 <-
+  known_eRNA_cl6[sort(known_eRNA_cl6$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl7 <-
+  known_eRNA_cl7[sort(known_eRNA_cl7$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+top_eRNA_cl8 <-
+  known_eRNA_cl8[sort(known_eRNA_cl8$log_p_value), "motif_name"] %>%
+  unique() %>%
+  head(n=9)
+
+
+top_motifs_eRNA <- c(top_eRNA_cl1,
+                     top_eRNA_cl2,
+                     top_eRNA_cl3,
+                     top_eRNA_cl4,
+                     top_eRNA_cl5,
+                     top_eRNA_cl6,
+                     top_eRNA_cl7,
+                     top_eRNA_cl8) %>% unlist()
+
+known_eRNA <- Reduce(
+  rbind,
+  list(cbind(known_eRNA_cl1, cluster = 1),
+       cbind(known_eRNA_cl2, cluster = 2),
+       cbind(known_eRNA_cl3, cluster = 3),
+       cbind(known_eRNA_cl4, cluster = 4),
+       cbind(known_eRNA_cl5, cluster = 5),
+       cbind(known_eRNA_cl6, cluster = 6),
+       cbind(known_eRNA_cl7, cluster = 7),
+       cbind(known_eRNA_cl8, cluster = 8)
+  )
+)
+
+known_eRNA <- known_eRNA %>%
+    group_by(cluster, motif_name) %>%
+    summarise(top_log_p_value = max(log_p_value)) %>%
+    ungroup()
+
+known_eRNA_top <- known_eRNA %>%
+  filter(motif_name %in% top_motifs_eRNA)
+
+known_eRNA_top %>%
+    ggplot(aes(x = cluster, y = motif_name, fill = top_log_p_value)) +
+    geom_tile() +
+  coord_flip() +
+  xlab(expression(cluster[eRNA])) +
+  ylab("motif name") +
+  labs(fill='-log10(p-value)') +
+  scale_x_continuous(breaks = 1:9) +
+  theme_pubr() +
+  scale_fill_viridis() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    text = element_text(size = 15),
+        legend.position = "right")
+
+```
+
+
+Acessibility, gene expression, and eRNA expression at the DLX1 locus (Supplementary Figure 6)
+
+```{r}
+#chr2:172029574-172115145
+plotGeneExpression(dds_genes_symbol, "DLX1") #object and function see CAGE processing Rmd
+
+tx_track_DLX1 <- GeneRegionTrack(txdb,
+                            genome = "hg38",
+                            chromosome = "chr2",
+                            start=172029574,
+                            end=172115145,
+                            #name="Gene Models",
+                            transcriptAnnotation = "symbol",
+                            col=NA, 
+                            fill="black", 
+                            hape="arrow",
+                            background.title="white",
+                            fontsize=16)
+
+tx_track_DLX1@range$symbol[which(tx_track_DLX1@range$symbol == "ENST00000361725.5")] <- "DLX1"
+tx_track_DLX1@range$symbol[which(tx_track_DLX1@range$symbol == "ENST00000234198.9")] <- "DLX2"
+tx_track_DLX1@range$symbol[which(tx_track_DLX1@range$symbol == "ENST00000448117.1")] <- "DLX2-DT"
+
+plot_region <- GRanges(seqnames = "chr2", ranges = "172029574-172115145")
+
+
+input.tracks <- list()
+input.tracks$d5 <- DataTrack("./ATAC/ATAC_d5_rep1.merged.nodup.tn5.pooled.fc.signal.bigwig",
+                             genome="hg38", chr="chr2", start=172029574, end=172115145,
+                             type="h", lwd=2, ylim=c(0,18),
+                             col = my_palette[1],
+                             name = " ", yTicksAt=c(5,10,15),
+                             background.title="white", col.axis="black")
+
+input.tracks$d8 <- DataTrack("./ATAC/ATAC_d8_rep1.merged.nodup.tn5.pooled.fc.signal.bigwig",
+                             genome="hg38", chr="chr2", start=172029574, end=172115145,
+                             type="h", lwd=2, ylim=c(0,18),
+                             col = my_palette[2],
+                             name = " ", yTicksAt=c(5,10,15),
+                             background.title="white", col.axis="black")
+
+input.tracks$d11 <- DataTrack("./ATAC/ATAC_d11_rep1.merged.nodup.tn5.pooled.fc.signal.bigwig",
+                             genome="hg38", chr="chr2", start=172029574, end=172115145,
+                             type="h", lwd=2, ylim=c(0,18),
+                             col = my_palette[3],
+                             name = " ", yTicksAt=c(5,10,15),
+                             background.title="white", col.axis="black")
+
+input.tracks$p2 <- DataTrack("./ATAC/ATAC_p2_rep1.merged.nodup.tn5.pooled.fc.signal.bigwig",
+                             genome="hg38", chr="chr2", start=172029574, end=172115145,
+                             type="h", lwd=2, ylim=c(0,18),
+                             col = my_palette[4],
+                             name = " ", yTicksAt=c(5,10,15),
+                             background.title="white", col.axis="black")
+
+cluster_track <- Enhancer %>%
+    subsetByOverlaps(plot_region) %>%
+    trackClusters(name = "Clusters", 
+                  col = NA, 
+                  showId = F,
+                  background.title="white",
+                  col.axis="black",
+                  fontcolor = "black",
+                  plusColor="blue1",
+                  minusColor="red1",
+                  unstrandedColor="darkorchid1")
+
+all.tracks <- list(axisTrack, input.tracks$d5, input.tracks$d8, input.tracks$d11, input.tracks$p2, cluster_track, tx_track_DLX1)
+
+plotTracks(all.tracks, from=172029574, to=172115145, chromosome="chr2", collapseTranscripts = "longest",transcriptAnnotation = "symbol", scale=0.1)
+```

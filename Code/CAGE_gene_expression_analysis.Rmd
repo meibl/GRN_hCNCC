@@ -1,0 +1,672 @@
+---
+title: "CAGE_gene_expression_analysis.Rmd"
+author: "Michael Eibl"
+bibliography: CAGE_bibliography.bib
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+For a preliminary analysis, familiarization with the data and standard CAGE-seq data analysis, and evaluation of computational feasibility (locally!) the CAGE data (4 time points, each 3 replicates), was first analyzed together.
+
+Going forward, only the three replicates per timepoint are combined, to allow elucidation of changes in CTSSs distribution across the genome in the course of hNCC differentiation.
+
+##Introduction to CAGE data
+
+**Cap analysis of gene expression (CAGE)-seq** is an approach to identify and monitor the activity (transcription initiation frequency) of transcription start sites (TSSs) at single base-pair resolution across the genome. It is typically used to identify active promoter and enhancer regions @Morioka2020. A key tool for analysis of the CAGE-seq in R is **CAGEfightR**, a framework for analysis of CAGE and other 5′-end data implemented as an R/Bioconductor-package. CAGEfightR can import data from BigWig files and allows for fast and memory efficient prediction and analysis of TSSs and enhancers. Downstream analyses include quantification, normalization, annotation with transcript and gene models, TSS shape statistics, linking TSSs to enhancers via co-expression, identification of enhancer clusters, and genome-browser style visualization @Thodberg2019.
+
+Cap Analysis of Gene Expression (CAGE) is one of the most popular 5’-end high-throughput assays for profiling Transcription Start Site (TSS) activity. CAGE is based on sequencing the first 20-30 basepairs of capped full-length RNAs, called CAGE-tags. When mapped to a reference genome, CAGE-tags can be used to identify both TSSs and enhancers. See the CAGEfightR paper for additional introduction.
+
+CAGE-data is often represented as CAGE TSSs (CTSSs), which is the the number of CAGE-tag 5’-ends mapping to each genomic position. CTSSs thereby represent a genome-wide, basepair resolution, quantitative atlas of transcription. CTSSs are inherently sparse, as only very few genomic positions are CTSSs, and only very few CTSSs have a high number of CAGE-tags.
+
+Analysis of CAGE data is often focused on identifying clusters of CTSSs that corresponds to activity of individual TSSs and enhancers. Having access to both TSSs and enhancers in a single experiment makes CAGE well suited for studying many aspects of transcriptional regulation, for example differential expression, motif analysis and alternative TSS usage.
+
+
+```{r}
+#libraries
+library("CAGEfightR")
+library("InteractionSet")
+library("ggplot2")
+library("ggpubr")
+library("ggthemes")
+library("ggforce")
+library("ggseqlogo")
+library("patchwork")
+library("dplyr")
+library("tidyverse")
+library("magrittr")
+library("org.Hs.eg.db")
+library("TxDb.Hsapiens.UCSC.hg38.knownGene")
+library("BSgenome.Hsapiens.UCSC.hg38")
+library("Gviz")
+library("limma")
+library("edgeR")
+library("stringr")
+library("qusage")
+library("ComplexHeatmap")
+library("sva")
+library("DESeq2")
+library("viridis")
+library("TCseq")
+library("clusterProfiler")
+library("fgsea")
+library("msigdbr")
+library("Mfuzz")
+```
+
+```{r}
+#load relevant reference datasets for the analysis
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+bsg <- BSgenome.Hsapiens.UCSC.hg38
+odb <- org.Hs.eg.db
+```
+
+
+### Preprocessing
+
+
+```{r}
+#load data
+design <- read.table(file = "./cage_design.txt") %>% as.data.frame()
+design
+#split design matrix by day and specify order
+design_l <- split(design, design$stage)
+design_l <- design_l[c("d5", "d8", "d11", "p2")]
+
+design_l
+
+#specify filenames accordingly to read in bigwig files
+bw_plus_l <- list()
+bw_minus_l <- list()
+
+for (tp in names(design_l)) {
+  bw_plus <- c()
+  bw_minus <- c()
+  
+  for (i in 1:3) {
+    bw_plus[i] <- paste0("./hg38.", design_l[[tp]][i, "sample_id"], "_", design_l[[tp]][i, "run_id"], ".plus.bw")
+    bw_minus[i] <- paste0("./hg38.", design_l[[tp]][i, "sample_id"], "_", design_l[[tp]][i, "run_id"], ".minus.bw")
+  }
+  
+  bw_plus_l[[tp]] <- bw_plus
+  bw_minus_l[[tp]] <- bw_minus
+}
+
+bw_plus <- BigWigFileList(unlist(bw_plus_l))
+bw_minus <- BigWigFileList(unlist(bw_minus_l))
+
+# Create two named BigWigFileList-objects:
+#bw_plus_l <- lapply(bw_plus_l, BigWigFileList)
+#bw_minus_l <- lapply(bw_minus_l, BigWigFileList)
+
+for(tp in names(design_l)) {
+  names(bw_plus_l[[tp]]) <- design_l[[tp]][,"run_id"]
+  names(bw_minus_l[[tp]]) <- design_l[[tp]][,"run_id"]
+}
+
+design_mat <- rbind(design_l$d5,
+      rbind(design_l$d8,
+            rbind(design_l$d11, design_l$p2)))
+
+names(bw_plus) <- design_mat$sample_id
+names(bw_minus) <- design_mat$sample_id
+
+bw_plus$C1
+
+file.exists(resource(bw_minus$C1))
+```
+
+The first step is to quantify CTSSs across all samples using quantifyCTSSs, which will return the results as a `RangedSummarizedExperiment`.
+
+```{r}
+# Get genome information
+genomeInfo <- SeqinfoForUCSCGenome("hg38")
+
+
+for (i in 1:nrow(design_mat)) {
+  design_mat[i, "BigWigPlus"] <- paste0("./hg38.", design_mat$sample_id[i], "_", design_mat$run_id[i], ".plus.bw")
+  design_mat[i, "BigWigMinus"] <- paste0("./hg38.", design_mat$sample_id[i], "_", design_mat$run_id[i], ".minus.bw")
+}
+design_mat
+
+str(design_mat)
+
+design_mat
+
+bwValid(bw_minus)
+
+
+names(bw_minus)
+
+#Quantify CTSSs
+CTSSs <- quantifyCTSSs(plusStrand = bw_plus,
+                       minusStrand = bw_minus,
+                       genome=genomeInfo,
+                       design = design_mat)
+
+CTSSs
+```
+
+`CAGEfightR` finds clusters by calculating the pooled CTSS signal across all samples: We first normalize CTSS counts in each sample to Tags-Per-Million (TPM) values, and then sum TPM values across replicates.
+
+The wrapper function quickTSSs will automatically find and quantify candidate TSSs, returning the results as a `RangedSummarizedExperiment`.
+(A convienient wrapper around calcTPM, calcPooled, tuneTagClustering, clusterUnidirectionally and quantifyClusters.)
+
+Many of the identified tag clusters (TCs) will be very lowly expressed. To obtain likely biologically relevant TSSs, we keep only TCs expressed at more than 1 TPM in at least 3 samples (3 samples being the size of the smallest experimental group)
+
+```{r}
+TCs <- quickTSSs(CTSSs)
+
+
+TSSs <- TCs %>%
+  calcTPM() %>%
+  subsetBySupport(inputAssay="TPM",unexpressed=0,minSamples=3)
+
+```
+
+Similarly, `quickEnhancers` will find and quantify candidate enhancers
+(A convienient wrapper around clusterBidirectionally, subsetByBidirectionality and quantifyClusters.)
+
+Again, we are not usually interested in very lowly expressed birectional clusters (BCs). As BCs are overall lowly expressed compared to TCs, we will simply filter out BCs without at least 1 count in 3 samples.
+
+```{r}
+Enhancers <- quickEnhancers(CTSSs)
+
+Enhancers <- Enhancers %>%
+  subsetBySupport(inputAssay="counts",unexpressed=0,minSamples=3)
+
+```
+We can then use transcript models stored in a `TxDb`-object to annotate each candidate TSS and enhancer with their transcript context.
+
+Starting with the TSS candidates, we can not only annotate a TSS with overlapping transcripts, but also in what part of a transcript a TSS lies by using a hierarchical annotation scheme. As some TSS candidates might be very wide, we only use the TSS peak for annotation purposes.
+
+Usually, candidate enhancers overlapping known transcripts are removed.
+**Note:** We might be interested in enhancers overlapping known transcripts...
+
+```{r}
+# Annotate with transcript IDs                           
+TSSs <- assignTxID(TSSs, txModels = txdb,swap="thick")
+
+# Annotate with transcript context                       
+TSSs <- assignTxType(TSSs, txModels = txdb, swap="thick")
+
+# Annotate with transcript IDs 
+BCs <- assignTxType(Enhancers, txModels = txdb, swap="thick")
+
+# Keep only non-exonic BCs as enhancer candidates
+Enhancers <- subset(BCs, txType %in% c("intergenic", "intron"))
+```
+
+```{r}
+# Clean colData                             
+TSSs$totalTags <- NULL                    
+Enhancers$totalTags <- NULL              
+
+# Clean rowData                             
+rowData(TSSs)$balance <- NA                 
+rowData(TSSs)$bidirectionality <- NA        
+rowData(Enhancers)$txID <- NA             
+
+# Add labels for making later retrieval easy
+rowData(TSSs)$clusterType <- "TSS"         
+rowData(Enhancers)$clusterType <- "Enhancer"
+```
+
+For usage with other Bioconductor package, it can be useful to merge candidate TSSs and enhancers into a single object.
+
+```{r}
+RSE <- combineClusters(object1=TSSs,                                                           
+                       object2 = Enhancers,                                                    
+                       removeIfOverlapping="object1")
+
+RSE <- calcTPM(RSE)
+```
+
+Getting an overview of the number and expression of clusters in relation to transcript annotation:
+
+```{r}
+# Supplementary Figure 2d,e
+
+cluster_info <- RSE %>%
+    rowData() %>%      
+    as.data.frame()
+
+p1 <- ggplot(cluster_info, aes(x=txType, fill=clusterType)) +     
+    geom_bar(alpha=0.75, position="dodge", color="black") + 
+    scale_fill_colorblind("Cluster type") +                 
+    labs(x="Cluster annotation", y="Frequency") +           
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          text = element_text(size=14))
+
+# Expression of clusters                                                 
+p2 <- ggplot(cluster_info, aes(x=txType,                                       
+                         y=log2(score/ncol(RSE)),                        
+                         fill=clusterType)) +                            
+    geom_violin(alpha=0.75, draw_quantiles = c(0.25, 0.50, 0.75)) +      
+    scale_fill_colorblind("Cluster type") +                              
+    labs(x="Cluster annotation", y="log2(TPM)") +                        
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          text = element_text(size=14)) 
+
+p1 / p2
+```
+
+```{r}
+# Create DESeq2 object with blank design    
+dds_blind <- DESeqDataSet(RSE, design = ~ 1)
+
+# Normalize and log transform               
+vst_blind <- vst(dds_blind, blind = TRUE)
+
+vst_blind$stage <- factor(vst_blind$stage, levels = c("d5", "d8", "d11", "p2"))
+
+plotPCA(vst_blind, "stage") + theme_pubr() + theme(legend.title = element_blank(),
+                                                   text = element_text(size=15))
+```
+
+```{r}
+RSE <- assignGeneID(RSE, geneModels=txdb)
+
+saveRDS(RSE, file = "./RSE_supp_03_enh_02.rds")
+```
+
+
+
+### Figure 1
+
+
+
+```{r}
+#PCA CTSSs
+
+# Create DESeq2 object with blank design    
+dds_blind <- DESeqDataSet(RSE, design = ~ stage)
+
+# Normalize and log transform               
+vst_blind <- varianceStabilizingTransformation(dds_blind, blind = TRUE)
+
+vst_blind$stage <- factor(vst_blind$stage, levels = c("d5", "d8", "d11", "p2"))
+
+plotPCA(vst_blind, "stage") +
+  theme_pubr() +
+  ggtitle("CTSSs") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+```
+
+```{r}
+#Do PCA for TSSs and Ehancers separately
+TSS <- RSE[which(rowData(RSE)[, "clusterType"] == "TSS"),]
+
+Enhancer <- RSE[which(rowData(RSE)[, "clusterType"] == "Enhancer"),]
+
+#PCA for TSS only
+dds_TSS_blind <- DESeqDataSet(TSS, design = ~ stage)
+vst_TSS_blind <- varianceStabilizingTransformation(dds_TSS_blind, blind = FALSE)
+vst_TSS_blind$stage <- factor(vst_TSS_blind$stage, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_TSSs <- plotPCA(vst_TSS_blind, "stage") +
+  theme_pubr() +
+  ggtitle("TSSs") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15)) +
+  ylim(c(-25,27)) +
+  xlim(c(-60, 80))
+
+#PCA for Enhancers only
+dds_Enhancer <- DESeqDataSet(Enhancer, design = ~ stage)
+dds_Enhancer$stage <- as.factor(dds_Enhancer$stage)
+vst_Enhancer <- varianceStabilizingTransformation(dds_Enhancer, blind = FALSE)
+vst_Enhancer$stage <- factor(vst_Enhancer$stage, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_enh <- plotPCA(vst_Enhancer, "stage") +
+  theme_pubr() +
+  ggtitle("Enhancers") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+
+PCA_enh
+
+dds_Enhancer <- DESeq(dds_Enhancer)
+```
+
+
+
+```{r}
+RSE <- assignGeneID(RSE, geneModels=txdb)
+
+GSE <- RSE %>%                                        
+    subset(clusterType == "TSS") %>%                  
+    quantifyGenes(genes="geneID", inputAssay="counts")
+
+rowData(GSE)$symbol <- mapIds(odb,                         
+                              keys=rownames(GSE),          
+                              column="SYMBOL",             
+                              keytype="ENTREZID")
+
+
+
+GSE <- calcTPM(GSE)
+
+entrezid <- rownames(GSE@assays@data$TPM)
+
+symbols <- mapIds(odb,
+                    keys=rownames(GSE@assays@data$TPM),
+                    keytype="ENTREZID",
+                    column="SYMBOL")
+  
+rownames(GSE@assays@data$TPM) <- symbols
+
+#remove unmappable gene names (3 / 20148)
+entrezid <- entrezid[!is.na(rownames(GSE@assays@data$TPM))]
+GSE <- GSE[!is.na(rownames(GSE@assays@data$TPM)), ]
+
+
+#gene expression PCA
+dds_genes_blind <- DESeqDataSet(GSE, design = ~ 1)
+vst_genes_blind <- varianceStabilizingTransformation(dds_genes_blind, blind = TRUE)
+vst_genes_blind$stage <- factor(vst_genes_blind$stage, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_genes <- plotPCA(vst_genes_blind, "stage") +
+  theme_pubr() +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15))
+
+dds_genes <- DESeqDataSet(GSE, design = ~ stage)
+dds_genes$stage <- as.factor(dds_genes$stage)
+vst_genes <- varianceStabilizingTransformation(dds_genes, blind = F)
+vst_genes$stage <- factor(vst_genes$stage, levels = c("d5", "d8", "d11", "p2"))
+
+PCA_genes <- plotPCA(vst_genes, "stage") +
+  theme_pubr() +
+  ggtitle("gene expression") +
+  theme(legend.title = element_blank(),
+        legend.position = "right",
+        text = element_text(size=15))
+
+PCA_genes <- plotPCA(vst_genes, "stage") +
+  theme_pubr() +
+  ggtitle("Gene-level") +
+  theme(legend.title = element_blank(),
+        text = element_text(size=15)) +
+  ylim(c(-25,27)) +
+  xlim(c(-60, 80))
+
+dds_genes <- DESeq(dds_genes)
+```
+
+Plot PCAs.
+
+```{r}
+#Supplementary Figure 2a-c
+ggarrange(plotlist = list(PCA_TSSs, PCA_enh, PCA_genes), ncol=3, common.legend = T)
+
+ggarrange(plotlist = list(PCA_TSSs, PCA_genes), ncol=2, common.legend = T)
+```
+
+```{r}
+(PCA_genes + ggtitle("gene expression")+ theme(legend.position = "top")) +
+  plot_spacer() +
+    (PCA_ATAC +ggtitle("chromatin accessibility")+ theme(legend.position = "top") + coord_fixed(ratio = 1.7)) +
+    plot_layout(guides = "collect",ncol = 3, widths = c(1, 0.1, 1)) &
+    theme(legend.position = "top")
+```
+
+
+```{r}
+dds_genes$stage <- factor(dds_genes$stage, levels = c("d5", "d8", "d11", "p2"))
+dds_genes <- estimateSizeFactors(dds_genes)
+norm_gene_counts <- counts(dds_genes, normalized=T)
+```
+
+Time-course fuzzy c-means clustering.
+
+```{r}
+#Create matrix with time-course gene expression (TPM), each time point the average of the 3 replicates
+
+d5_TPM_mean <- data.frame(
+  genes = rownames(GSE@assays@data$TPM),
+  TPM = as.numeric(rowMeans(GSE@assays@data$TPM[,1:3]))
+  )
+
+d8_TPM_mean <- data.frame(
+  genes = rownames(GSE@assays@data$TPM),
+  TPM = as.numeric(rowMeans(GSE@assays@data$TPM[,4:6]))
+  )
+
+d11_TPM_mean <- data.frame(
+  genes = rownames(GSE@assays@data$TPM),
+  TPM = as.numeric(rowMeans(GSE@assays@data$TPM[,7:9]))
+  )
+
+p2_TPM_mean <- data.frame(
+  genes = rownames(GSE@assays@data$TPM),
+  TPM = as.numeric(rowMeans(GSE@assays@data$TPM[,10:12]))
+  )
+
+tc_tpm_expr <- data.frame(d5 = d5_TPM_mean$TPM,
+                          d8 = d8_TPM_mean$TPM,
+                          d11 = d11_TPM_mean$TPM,
+                          p2 = p2_TPM_mean$TPM)
+
+rownames(tc_tpm_expr) <- rownames(GSE@assays@data$TPM)
+
+tc_tpm_expr_TPM0.5 <- tc_tpm_expr %>%
+  filter_all(any_vars(. > 0.5))
+
+entrezid_TPM05 <- entrezid[which(rownames(tc_tpm_expr) %in% rownames(tc_tpm_expr_TPM0.5))]
+```
+
+```{r}
+max_percent_change <- cbind(
+  apply(abs(log2(tc_tpm_expr_TPM0.5[,-1]+1) - log2(tc_tpm_expr_TPM0.5[,1] +1)), MARGIN = 1, FUN = max),
+  apply(abs(log2(tc_tpm_expr_TPM0.5[,-2]+1) - log2(tc_tpm_expr_TPM0.5[,2] +1)), MARGIN = 1, FUN = max),
+  apply(abs(log2(tc_tpm_expr_TPM0.5[,-3]+1) - log2(tc_tpm_expr_TPM0.5[,3] +1)), MARGIN = 1, FUN = max)
+)
+
+genes_log2FC_05 <- max_percent_change  %>%
+  as.data.frame() %>%
+  filter_all(any_vars(. > 0.5)) %>%
+  rownames()
+
+tc_tpm_expr_TPM0.5_variable <- tc_tpm_expr_TPM0.5[genes_log2FC_05,]
+
+```
+
+```{r}
+tc_normcounts_expr <- data.frame(d5 = as.numeric(rowMeans(norm_gene_counts[,1:3])),
+                          d8 = as.numeric(rowMeans(norm_gene_counts[,4:6])),
+                          d11 = as.numeric(rowMeans(norm_gene_counts[,7:9])),
+                          p2 = as.numeric(rowMeans(norm_gene_counts[,10:12])))
+
+rownames(tc_normcounts_expr) <- rownames(dds_genes@assays@data$counts)
+
+res_d5_d8 <- results(dds_genes, contrast =  c("stage", "d5", "d8"))
+res_d5_d11 <- results(dds_genes, contrast =  c("stage", "d5", "d11"))
+res_d5_p2 <- results(dds_genes, contrast =  c("stage", "d5", "p2"))
+res_d8_d11 <- results(dds_genes, contrast =  c("stage", "d8", "d11"))
+res_d8_p2 <- results(dds_genes, contrast =  c("stage", "d8", "p2"))
+res_d11_p2 <- results(dds_genes, contrast =  c("stage", "d11", "p2"))
+
+maxFC_genes <- cbind(
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d5_d11$log2FoldChange, res_d5_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d8$log2FoldChange, res_d8_d11$log2FoldChange, res_d8_p2$log2FoldChange))), MARGIN = 1, FUN = max),
+  apply(abs(Reduce(cbind, list(res_d5_d11$log2FoldChange, res_d8_d11$log2FoldChange, res_d11_p2$log2FoldChange))), MARGIN = 1, FUN = max)
+)
+
+rownames(maxFC_genes) <- rownames(dds_genes@assays@data$counts)
+
+genes_log2FC_1 <- maxFC_genes  %>%
+  as.data.frame() %>%
+  filter_all(any_vars(. > 1)) %>%
+  rownames()
+
+tc_normcounts_expr_variable <- tc_normcounts_expr[genes_log2FC_1,]
+```
+
+Plot time-course gene expression clusters.
+
+```{r}
+es <- ExpressionSet(assayData=as.matrix(tc_normcounts_expr_variable))
+es.stand <- standardise(es)
+
+cl <- mfuzz(es.stand,c=6,m=1.5)
+
+df_tc_normcounts_expr_variable <- as.data.frame(cl$cluster)
+colnames(df_tc_normcounts_expr_variable) <- "Cluster"
+df_tc_normcounts_expr_variable$gene <- rownames(df_tc_normcounts_expr_variable)
+df_tc_normcounts_expr_variable$membership = NA
+
+for (i in 1:nrow(df_tc_normcounts_expr_variable)) {
+  df_tc_normcounts_expr_variable$membership[i] <- max(cl$membership[i,])
+}
+
+df_tc_normcounts_expr_variable <- cbind(
+  df_tc_normcounts_expr_variable,
+  es.stand@assayData$exprs
+)
+
+df_tc_normcounts_expr_variable_melt <- melt(df_tc_normcounts_expr_variable, id.vars = c("gene", "Cluster", "membership"))
+colnames(df_tc_normcounts_expr_variable_melt)[c(4,5)] <- c("timepoint", "z")
+
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 1), "Cluster"] <- "cluster[genes]~1"
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 2), "Cluster"] <- "cluster[genes]~2"
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 3), "Cluster"] <- "cluster[genes]~3"
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 4), "Cluster"] <- "cluster[genes]~4"
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 5), "Cluster"] <- "cluster[genes]~5"
+df_tc_normcounts_expr_variable_melt[which(df_tc_normcounts_expr_variable_melt$Cluster == 6), "Cluster"] <- "cluster[genes]~6"
+
+df_tc_normcounts_expr_variable_melt$Cluster <- factor(df_tc_normcounts_expr_variable_melt$Cluster,
+                                       levels = c("cluster[genes]~1",
+                                                  "cluster[genes]~2",
+                                                  "cluster[genes]~3",
+                                                  "cluster[genes]~4",
+                                                  "cluster[genes]~5",
+                                                  "cluster[genes]~6"))
+
+ggplot(df_tc_normcounts_expr_variable_melt, aes(x=timepoint, y=z, group=gene, col=membership)) +
+  geom_line(alpha=0.2) +
+  facet_wrap(~Cluster, labeller = label_parsed) +
+  theme_minimal() +
+  xlab("time point") +
+  ylab("z-score") +
+  theme(strip.background=element_rect(colour="black",
+                                    fill="white"),
+        text = element_text(size = 15),
+        legend.position="bottom"
+  )
+```
+
+Gene ontology analysis per cluster.
+
+```{r}
+geneList_clusters_normcounts_variable <- list(
+  "1" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "1")],
+  "2" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "2")],
+  "3" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "3")],
+  "4" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "4")],
+  "5" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "5")],
+  "6" = df_tc_normcounts_expr_variable$gene[which(df_tc_normcounts_expr_variable$Cluster == "6")]
+)
+
+lapply(geneList_clusters_normcounts_variable, length)
+
+#universe: expressed genes
+#https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1009935
+#https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4983442/
+#https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0761-7
+
+ck_normcounts_variable <- compareCluster(geneCluster = geneList_clusters_normcounts_variable,
+                     fun = enrichGO,
+                     OrgDb = org.Hs.eg.db,
+                     ont = "all")
+
+ck_normcounts_variable <- setReadable(ck_normcounts_variable, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+ck_normcounts_variable@compareClusterResult[ck_normcounts_variable@compareClusterResult$Cluster == "4",]
+
+dotplot(ck_normcounts_variable, label_format = 70) +
+  scale_color_gradientn(colours=c("#f7ca64", "#46bac2", "#7e62a3"))
+```
+
+
+Supplementary Figure 1b
+
+```{r}
+rownames(tc_normcounts_expr) <- rownames(dds_genes_symbol)
+
+tc_normcounts_expr
+
+genes_OI <- c("SOX2", "PAX6", "CDH2", "SIX3", "PAX7", "SOX10", "NR2F1", "SOX9", "ZEB1", "SNAI2", "RHOB", "TWIST1", "TFAP2A")
+
+Heatmap(as.matrix(tc_normcounts_expr[genes_OI, ]) %>% t() %>% scale() %>% t(),
+        cluster_rows = F,
+        cluster_columns = F,
+        col = viridis(100),
+        column_names_side = "top",
+        column_names_rot = 45,
+        name = "relative\nexpression",
+        column_names_gp = grid::gpar(fontsize = 15))
+```
+
+Supplementary Figure 5
+
+```{r}
+plotGeneExpression <- function(dds_obj, goi) {
+  
+  df <- plotCounts(dds_obj,
+           gene = goi,
+           intgroup = "stage",
+           normalized = T,
+           transform = F,
+           returnData = T)
+  df$stage <- factor(df$stage, levels = c("d5", "d8", "d11", "p2"))
+  
+  ggboxplot(df,
+            x="stage",
+            y="count",
+            fill = "stage",
+            alpha=0.8,
+            palette = rev(my_palette),
+            xlab="",
+            ylab="gene expression",
+            add= "jitter",
+            add.params = list(size=4)) +
+  theme(text = element_text(size=16),
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+    rremove("legend") +
+    ggtitle(paste(c(goi, "expression"), sep = " "))
+}
+```
+
+
+```{r}
+( plotGeneExpression(dds_genes_symbol, "GABRB2") |
+  (plotGeneExpression(dds_genes_symbol, "CRYBA1") + rremove("ylab"))|
+  (plotGeneExpression(dds_genes_symbol, "CDH2") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "COL2A1") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "HOXA2") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "COL1A1") + rremove("ylab"))) /
+  (plotGeneExpression(dds_genes_symbol, "KCNC3") |
+  (plotGeneExpression(dds_genes_symbol, "EYA4") + rremove("ylab")) |
+    (plotGeneExpression(dds_genes_symbol, "DLG4") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "DLX2") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "HOXA3") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "ADAMTS5") + rremove("ylab"))) /
+  (plotGeneExpression(dds_genes_symbol, "SYT7") |
+  (plotGeneExpression(dds_genes_symbol, "KCNA1") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "SEMA4D") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "MSX2") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "WNT3A") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "FOXC2") + rremove("ylab"))) /
+  (plotGeneExpression(dds_genes_symbol, "GRIA1") |
+  (plotGeneExpression(dds_genes_symbol, "DNAJB13") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "SHANK2") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "EDNRA") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "RFX4") + rremove("ylab")) |
+  (plotGeneExpression(dds_genes_symbol, "RHOB") + rremove("ylab")))
+```
+
+
+
+
+
